@@ -6,9 +6,7 @@ Target: Linux VMs (Ubuntu). Shell: bash.
 ## Quick start (new machine)
 
 ```bash
-git clone <repo-url> ~/dotfiles
-cd ~/dotfiles
-./bootstrap.sh
+git clone git@github.com:madewithpat/dots.git ~/dotfiles && ~/dotfiles/bootstrap.sh
 ```
 
 `bootstrap.sh` is idempotent — safe to re-run.
