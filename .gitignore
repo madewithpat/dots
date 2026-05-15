@@ -1,0 +1,5 @@
+# Machine-local files — never commit
+.DS_Store
+*.local
+*.bak
+*.swp

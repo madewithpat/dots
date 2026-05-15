@@ -1,0 +1,39 @@
+[core]
+	editor = nvim
+	autocrlf = input
+	pager = less -FX
+
+[init]
+	defaultBranch = main
+
+[pull]
+	rebase = true
+
+[push]
+	autoSetupRemote = true
+
+[rebase]
+	autoStash = true
+
+[diff]
+	colorMoved = default
+
+[merge]
+	conflictstyle = diff3
+
+[alias]
+	lg = log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit
+	st = status -sb
+	co = checkout
+	br = branch -vv
+	new = checkout -b
+	undo = reset --soft HEAD~1
+	amend = commit --amend --no-edit
+	aliases = config --get-regexp alias
+
+[color]
+	ui = auto
+
+# Machine-local identity and overrides (not committed)
+[include]
+	path = ~/.gitconfig.local
