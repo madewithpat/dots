@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Step 1: Pre-flight — back up any conflicting dotfiles ─────────────────────
 echo "==> Checking for existing dotfiles..."
-for f in .gitconfig .bashrc .bash_profile .tmux.conf; do
+for f in .gitconfig .bashrc .bash_profile; do
   target="$HOME/$f"
   if [[ -f "$target" && ! -L "$target" ]]; then
     echo "    Backing up $target -> ${target}.bak"
@@ -15,7 +15,7 @@ for f in .gitconfig .bashrc .bash_profile .tmux.conf; do
   fi
 done
 
-for dir in .config/nvim .config/starship.toml; do
+for dir in .config/nvim .config/starship.toml .config/tmux; do
   target="$HOME/$dir"
   if [[ -e "$target" && ! -L "$target" ]]; then
     echo "    Backing up $target -> ${target}.bak"
@@ -49,7 +49,16 @@ else
   echo "==> Claude Code already installed, skipping."
 fi
 
-# ── Step 5: Dry-run stow — review before committing ──────────────────────────
+# ── Step 5: Bootstrap TPM ────────────────────────────────────────────────────
+TPM_DIR="$HOME/.tmux/plugins/tpm"
+if [[ ! -d "$TPM_DIR" ]]; then
+  echo "==> Installing TPM..."
+  git clone https://github.com/tmux-plugins/tpm "$TPM_DIR"
+else
+  echo "==> TPM already installed, skipping."
+fi
+
+# ── Step 6: Dry-run stow — review before committing ──────────────────────────
 echo ""
 echo "==> Simulating stow (dry run)..."
 "$SCRIPT_DIR/stow.sh" --simulate
@@ -58,10 +67,10 @@ echo ""
 # Prompt before applying
 read -r -p "Apply stow symlinks? [y/N] " answer
 if [[ "$answer" =~ ^[Yy]$ ]]; then
-  # ── Step 6: Apply stow ───────────────────────────────────────────────────
+  # ── Step 7: Apply stow ───────────────────────────────────────────────────
   "$SCRIPT_DIR/stow.sh"
 
-  # ── Step 7: Source shell config ──────────────────────────────────────────
+  # ── Step 8: Source shell config ──────────────────────────────────────────
   echo ""
   echo "==> Bootstrap complete!"
   echo "    Run: source ~/.bashrc"
@@ -76,3 +85,4 @@ echo "  - Set up git identity: create ~/.gitconfig.local with [user] name/email"
 echo "  - Nerd Fonts: install manually from https://www.nerdfonts.com/font-downloads"
 echo "    (brew casks don't work on Linux)"
 echo "  - Machine-specific shell config: ~/.bashrc.local"
+echo "  - tmux plugins: start tmux, then press prefix+I to install via TPM"

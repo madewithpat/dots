@@ -2,6 +2,7 @@
 brew "git"
 brew "tree"
 brew "tmux"
+brew "sesh"
 brew "stow"
 brew "ripgrep"
 brew "fd"
