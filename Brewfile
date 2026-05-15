@@ -1,5 +1,4 @@
 # ── QoL / shell tools ─────────────────────────────────────────────────────────
-brew "git"
 brew "tree"
 brew "tmux"
 brew "sesh"
