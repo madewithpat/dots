@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET="$HOME"
 SIMULATE=false
 
-PACKAGES=(git bash tmux starship nvim)
+PACKAGES=(git bash tmux starship nvim claude)
 
 usage() {
   echo "Usage: $0 [--simulate] [package ...]"

@@ -3,3 +3,10 @@
 *.local
 *.bak
 *.swp
+
+# Neovim — generated/machine-local
+nvim/.config/nvim/lazy-lock.json
+nvim/.config/nvim/lazyvim.json
+
+# Tmux — installed plugins
+tmux/.config/tmux/plugins/
