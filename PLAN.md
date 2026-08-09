@@ -1,39 +1,81 @@
 # Dotfiles Plan
 
-**Approach:** GNU Stow (with a clear migration path to Chezmoi)
-**Target:** Linux VMs (Ubuntu) — workstation, homelab agents, etc.
-**Shell:** bash
+**Approach:** GNU Stow
+**Target:** Linux VMs (Ubuntu — workstation, homelab agents, batcave) **and** this Mac (macOS/Darwin, personal daily driver)
+**Shell:** bash (Linux) + zsh (macOS) — shell choice and OS are independent axes, not the same branch (see Conventions)
 **Tools managed:** see Packages section below
+
+---
+
+## Background
+
+This repo already provisioned batcave (10.0.0.159) and is stow-based. A separate tool, chezmoi (`madewithpat/dotfiles.git`), had been covering a narrow slice of this Mac's config (git identity, shared shell snippets) but was going stale from under-use. Decision: consolidate everything onto this repo, retire chezmoi entirely (unstow locally, archive the repo — last step, not first), and extend the package set to cover this Mac's daily-driver config, which chezmoi never reached (`~/.config/nvim`, `.zshrc`).
+
+Compared chezmoi, GNU Stow, and a bare git repo (`git --bare` + work-tree trick) before deciding. Chezmoi's strengths (per-machine templating, secrets injection) don't pay for themselves here — no secrets live in these dotfiles, and OS/shell branching is handled fine by a bootstrap script picking which packages to stow. Bare-repo is arguably simpler still (zero abstraction, files live at their real paths) but has no natural unit of "apply this bundle or don't," which stow's package model gives for free — a real requirement given the batcave/Mac split. Already fluent in stow via `work-dots` (the separate, unrelated WSL2/work-machine repo) was also a factor — one pattern to hold in memory, not two.
+
+**Batcave safety**: confirmed batcave has no auto-pull or auto-restow mechanism (no crontab, no relevant systemd timer). Changes pushed here only reach batcave if someone manually SSHes in and re-runs the bootstrap there. Nothing in this plan can break batcave by accident — it can only be affected by a deliberate, later re-apply.
 
 ---
 
 ## Directory Structure
 
 ```
-dotfiles/
+dots/
 ├── PLAN.md                   # this file
 ├── README.md                 # usage, onboarding a new machine
-├── Brewfile                  # brew bundle manifest (all managed packages)
+├── Brewfile                  # brew bundle manifest (brew-installable tools)
+├── npm-globals.txt           # global npm packages, one per line
+├── bun-globals.txt           # global bun packages, one per line
 ├── bootstrap.sh              # entry point: install deps, run stow
-├── packages.sh               # install tools via brew bundle
-├── stow.sh                   # wrapper: simulate or apply stow packages
+├── packages.sh               # install tools via brew bundle + the manifests above
+├── stow.sh                   # wrapper: simulate or apply stow packages, OS-aware
 │
-├── git/                      # stow package
-│   └── .gitconfig            # single identity + aliases (lg, etc.)
+├── git/                      # stow package — universal
+│   └── .gitconfig            # multi-identity (includeIf per work dir), SSH URL
+│                              # rewrites, git-lfs, aliases — ported from this
+│                              # Mac's real config, supersedes the old
+│                              # single-identity placeholder
 │
-├── bash/                     # stow package
-│   └── .bashrc
+├── shell-common/             # stow package — universal, sourced by both bash and zsh
+│   └── .config/shell/
+│       ├── common.sh              # PATH additions, EDITOR/PAGER
+│       └── common-interactive.sh  # ll/la/l, gs/gd/gl, lab-fix-term aliases
+│                              # ported from chezmoi's .config/shell/*
 │
-├── tmux/                     # stow package
+├── bash/                     # stow package — Linux
+│   └── .bashrc               # sources shell-common
+│
+├── zsh/                      # stow package — macOS (portable in principle;
+│   └── .zshrc                # only actually deployed on this Mac for now).
+│                              # No Mac-specific hardcoding — Homebrew path
+│                              # detection lives in one shared conditional,
+│                              # same pattern bootstrap.sh already uses.
+│                              # Sources shell-common.
+│
+├── tmux/                     # stow package — universal
 │   └── .tmux.conf
 │
-├── starship/                 # stow package
-│   └── .config/
-│       └── starship.toml
+├── starship/                 # stow package — universal
+│   └── .config/starship.toml
 │
-└── nvim/                     # stow package
-    └── .config/
-        └── nvim/             # LazyVim config directory
+├── claude/                   # stow package — universal
+│   └── .claude/
+│       ├── settings.json         # ported from this Mac's live config —
+│       │                          # includes fileSuggestion, model, tui,
+│       │                          # effortLevel that the old version lacked
+│       └── statusline-command.sh
+│
+├── nvim/                     # stow package — universal
+│   └── .config/nvim/         # replaced with the full LazyVim config built
+│                              # this session (obsidian.nvim, render-markdown,
+│                              # Snacks.image/picker, checkbox keymaps) —
+│                              # supersedes the bare LazyVim skeleton that
+│                              # was here (empty lua/plugins/, one-line
+│                              # init.lua)
+│
+└── macos/                    # stow package — macOS only
+    └── (TBD — genuinely Mac-only config; scope not yet finalized, see
+        Open Questions)
 ```
 
 Each top-level folder is a **stow package** — a logical grouping of one tool's config. Stow symlinks the contents into `$HOME`, preserving directory structure.
@@ -43,47 +85,68 @@ Each top-level folder is a **stow package** — a logical grouping of one tool's
 
 ---
 
-## Bootstrap Flow (new machine)
+## Conventions
 
-1. **Pre-flight**: check for and back up any existing dotfiles (`~/.gitconfig.bak`, etc.)
-2. **Install Homebrew** (Linuxbrew): `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
-3. **Install packages** via `packages.sh`: runs `brew bundle --file=./Brewfile`
-4. **Install Claude Code**: `curl -fsSL https://claude.ai/install.sh | bash`
-5. **Dry run stow** first: `./stow.sh --simulate` — review conflicts before touching anything
-6. **Apply stow**: `./stow.sh` — symlinks all packages into `$HOME`
-7. **Source shell config**: `source ~/.bashrc`
-
-The bootstrap script should be idempotent — safe to re-run on an already-configured machine.
-
+- **Shell and OS are independent axes.** A package's OS-scope (universal / Linux-only / macOS-only) is not the same thing as shell choice (bash / zsh). zsh is genuinely portable to Linux (`apt install zsh`) — the `zsh` package itself should stay free of Mac-specific assumptions. What *is* OS-locked (Homebrew's path, `pngpaste`, launchd vs. systemd, Ghostty) belongs in `macos` (or a future Linux-only equivalent), not baked into the shell package boundary.
+- **What lives in the repo**: config files only — no secrets, no machine-specific values.
+- **What doesn't**: API keys, tokens, SSH keys, anything in `~/.secrets/` or `.env` files.
+- **Per-machine overrides**: use a local include pattern where the tool supports it (e.g., `~/.gitconfig.local` included from `.gitconfig`).
+- **Shell init order**: keep `.zshrc`/`.bashrc` clean — source `shell-common` first, then tool inits (starship, homebrew, fnm) in a predictable, documented order.
+- Don't rely on stow-specific features or symlink tricks inside config files.
+- Keep configs self-contained — no hardcoded absolute paths like `/Users/patrick/...` or `/home/patrick/...`. Use `$HOME`, `$XDG_CONFIG_HOME`, and relative paths throughout.
 
 ---
 
-## Packages (Brewfile)
+## Bootstrap Flow (new machine)
 
-Organized into logical groups for readability in the Brewfile:
+1. **Pre-flight**: check for and back up any existing dotfiles (`~/.gitconfig.bak`, etc.) — already idempotent in `bootstrap.sh`.
+2. **Install Homebrew**: existing Darwin/Linux branch in `bootstrap.sh` already handles both paths (`/opt/homebrew` vs. `/home/linuxbrew/.linuxbrew`).
+3. **Install packages** via `packages.sh`:
+   - `brew bundle --file=./Brewfile`
+   - `xargs npm install -g < npm-globals.txt`
+   - `xargs -I{} bun install -g {} < bun-globals.txt`
+4. **Install curl-pipe tools** (idempotent, `command -v` guarded — same pattern already used for Claude Code):
+   - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash` (already present)
+   - bun: `curl -fsSL https://bun.sh/install | bash` (new)
+5. **Determine OS-appropriate package set** (new — see Stow Usage) and dry-run: `./stow.sh --simulate`
+6. **Apply stow**: `./stow.sh`
+7. **Source shell config**: `source ~/.zshrc` (macOS) or `source ~/.bashrc` (Linux)
 
-**QoL / shell tools**
+**Explicitly deferred, not in this pass**: `uv`/`uvx` and the `zmk` uv-tool install. `uv` may be worth capturing later if a real need shows up; not currently load-bearing for anything in daily use, easy to add when it is.
+
+---
+
+## Packages (Brewfile + global-package manifests)
+
+**Brewfile — QoL / shell tools**
 - `git`, `tree`, `tmux`, `stow`
 - `ripgrep` (rg), `fd`, `fzf`, `zoxide`
 - `starship`
 
-**Neovim + LazyVim stack**
+**Brewfile — Neovim + LazyVim stack**
 - `neovim`
-- `ripgrep`, `fd`, `fzf` (shared with above — listed once in Brewfile)
-- Nerd Fonts (cask — on Linux, install manually from nerd-fonts releases; note this in README)
+- `ripgrep`, `fd`, `fzf` (shared with above — listed once)
+- Nerd Fonts (cask — on Linux, install manually from nerd-fonts releases; note in README)
 
-**Dev / cloud tools**
+**Brewfile — Dev / cloud tools**
 - `gh` (GitHub CLI)
 - `awscli`
 
-**AI tools**
+**Brewfile — AI tools**
 - `opencode`
-- Claude Code — installed separately via `curl -fsSL https://claude.ai/install.sh | bash` (not a brew package)
+- Claude Code and bun — installed via their official curl installers, not brew (see Bootstrap Flow)
+
+**`npm-globals.txt`**
+- Currently near-empty in practice — `tree-sitter-cli` and `@mermaid-js/mermaid-cli` are installed on this Mac but orphaned (were for the now-removed Mermaid rendering support). Open question below: carry them into the manifest as-is, or start clean.
+
+**`bun-globals.txt`**
+- `@tobilu/qmd` — load-bearing. This is the vault search tool; `CLAUDE.md`'s Auto-Retrieve workflow depends on it being present. A machine bootstrapped without this manifest entry would look fully set up but have silently broken vault retrieval.
 
 **Future (not in initial Brewfile)**
 - `asdf` — deferred
+- `uv` — deferred, see Bootstrap Flow
 
-> **On native installers**: the Brewfile tracks what you want reproducible across machines. If you prefer a native installer for something (e.g., a specific neovim nightly), skip it in the Brewfile and document the manual step in README instead.
+> **On native installers**: the Brewfile (and the npm/bun manifests) track what you want reproducible across machines. If you prefer a native installer for something, skip it here and document the manual step in README instead.
 
 ---
 
@@ -91,20 +154,32 @@ Organized into logical groups for readability in the Brewfile:
 
 ```bash
 # Simulate (dry run — always run this first on a new machine)
-stow --simulate --dir=. --target=$HOME git tmux starship zsh asdf
+stow --simulate --dir=. --target=$HOME <packages...>
 
-# Apply all packages
-stow --dir=. --target=$HOME git tmux starship zsh asdf
-
-# Add a new package later
-stow --dir=. --target=$HOME <new-package>
+# Apply
+stow --dir=. --target=$HOME <packages...>
 
 # Remove a package's symlinks (un-stow)
 stow --delete --dir=. --target=$HOME <package>
 ```
 
-### Conflict resolution (before first run)
-For any existing file that conflicts, move it out of the way:
+### OS-conditional package selection (new)
+
+`stow.sh` needs a Darwin/Linux branch choosing the default package set, since `bash`/`zsh` and `macos` shouldn't both apply everywhere:
+
+```bash
+UNIVERSAL=(git shell-common tmux starship claude nvim)
+case "$(uname)" in
+  Darwin) PACKAGES=("${UNIVERSAL[@]}" zsh macos) ;;
+  Linux)  PACKAGES=("${UNIVERSAL[@]}" bash) ;;
+esac
+```
+
+Still overridable positionally (`./stow.sh git nvim`) for partial applies, same as today.
+
+### Conflict resolution (before first run on a new machine)
+
+For any existing file that conflicts, move it out of the way (or let `bootstrap.sh`'s pre-flight step do it automatically):
 ```bash
 mv ~/.gitconfig ~/.gitconfig.bak
 # then run stow
@@ -112,62 +187,51 @@ mv ~/.gitconfig ~/.gitconfig.bak
 
 ---
 
-## Conventions
-
-- **What lives in the repo**: config files only — no secrets, no machine-specific values
-- **What doesn't**: API keys, tokens, SSH keys, anything in `~/.secrets/` or `.env` files
-- **Per-machine overrides**: use a local include pattern where the tool supports it (e.g., `~/.gitconfig.local` included from `.gitconfig`)
-- **Shell init order**: keep `.zshrc` clean — source tool inits (asdf, starship, homebrew) in a predictable, documented order
-
----
-
 ## Adding New Tools
 
 1. Create a new folder at the top level: `mkdir <toolname>`
 2. Mirror the `$HOME` path inside it: e.g., `<toolname>/.config/<toolname>/config.toml`
-3. Stow it: `stow --dir=. --target=$HOME <toolname>`
-4. Commit the new package
+3. Decide its OS scope — universal, or add it to the Darwin/Linux branch in `stow.sh`
+4. Stow it: `stow --dir=. --target=$HOME <toolname>`
+5. Commit the new package
 
 ---
 
-## Chezmoi Migration Path
+## Migration from chezmoi (in progress)
 
-Chezmoi is a natural next step if you need:
-- Per-machine config templating (e.g., different `$EDITOR` on Mac vs Linux)
-- Secret injection (Age/SOPS integration, 1Password, etc.)
-- Encrypted files in the repo
+chezmoi (`madewithpat/dotfiles.git`) previously managed a narrow slice of this Mac: `.gitconfig`/`.mwp.gitconfig`/`.tm.gitconfig`, `.config/shell/common.sh` + `common-interactive.sh`, `CLAUDE.md`, `README.md`, one docs spec. Being retired in favor of full consolidation here.
 
-### Why Stow now is not a dead end
+**Order matters** — content flows *from* this Mac's live config *into* this repo first, not the reverse, since this Mac's real files are more complete than what was already in this repo for `git` and `claude` (see Directory Structure notes above). Sequence:
 
-The dotfiles themselves are portable — Chezmoi manages the same files, just differently. Migration is a tooling swap, not a rewrite:
+1. ✅ Branch (`plan-mac-consolidation`) — done, this plan update lives here first.
+2. Port this Mac's real `.gitconfig`, `.claude/settings.json`, and chezmoi's shell-common files into their respective packages.
+3. Add the `zsh` package.
+4. Replace the `nvim` package wholesale with this session's LazyVim config.
+5. Add the OS-conditional branch to `stow.sh`, add `npm-globals.txt`/`bun-globals.txt` + their bootstrap/packages.sh steps, add the `bun` curl-installer step.
+6. `stow --simulate` on this Mac, review the full diff, before applying anything for real.
+7. Only once the above is confirmed working: remove chezmoi's deployed files locally, uninstall/stop using chezmoi, archive `madewithpat/dotfiles` on GitHub.
 
-1. `chezmoi init` in the existing repo
-2. `chezmoi import` each config file — Chezmoi renames them (`dot_gitconfig`, etc.) and takes over management
-3. Replace `stow.sh` with `chezmoi apply` in the bootstrap
-4. Add templates (`{{ if eq .chezmoi.os "linux" }}`) only where you actually need branching
-
-### Migration triggers (when to consider it)
-
-- You need Mac support (different Homebrew path, different tools)
-- You want secrets injected at apply time rather than manually placed
-- You're managing dotfiles across 5+ machines and per-machine overrides get unwieldy
-
-### What to avoid in the Stow phase (to keep migration easy)
-
-- Don't rely on stow-specific features or symlink tricks inside config files
-- Keep configs self-contained — no hardcoded absolute paths like `/home/patrick/...`
-- Use `$HOME`, `$XDG_CONFIG_HOME`, and relative paths throughout
+**What chezmoi's own strengths would have offered, and why they're not needed**: per-machine templating (not needed — OS/shell branching handled by `stow.sh`'s conditional package selection) and secrets injection (not needed — no secrets live in these dotfiles by convention; per-machine identity already handled via gitignored local includes like `.gitconfig.local`).
 
 ---
 
-## Open Questions (decide before writing code)
+## Open Questions (decide before implementing)
 
-- **Git aliases**: finalized list beyond `lg`? Worth capturing now so `.gitconfig` is complete on first write.
+- **`macos` package scope**: what actually goes here? Candidates: Ghostty config, anything using `pngpaste`. Needs a real inventory pass, not yet done.
+- **`npm-globals.txt` starting contents**: carry `tree-sitter-cli`/`@mermaid-js/mermaid-cli` forward as-is (they're currently installed, just unused), or start the manifest clean and let it grow from real need?
+- **`bun-globals.txt` versioning**: pin `@tobilu/qmd` to its current git ref (`github:tobi/qmd#e428df7`, more reproducible, needs manual bumps) or track latest (simpler, can drift)?
+- **Git aliases**: finalized list beyond what's in the ported `.gitconfig`?
 - **Nerd Fonts on Linux**: brew casks don't work on Linux — manual install from nerd-fonts releases, or a small script in `bootstrap.sh`? Document clearly in README either way.
-- **`.bashrc` vs `.bash_profile`**: on Ubuntu, interactive login shells source `.bash_profile`; non-login interactive shells source `.bashrc`. Decide on the split before writing shell config.
+- **`.bashrc` vs `.bash_profile`**: on Ubuntu, interactive login shells source `.bash_profile`; non-login interactive shells source `.bashrc`. Decide on the split before touching the `bash` package (currently untouched by this consolidation — Linux-side only).
 
 **Resolved:**
-- Shell: bash ✓
-- Git identity: single `.gitconfig` with aliases ✓
+- Approach: GNU Stow, not chezmoi or bare-repo ✓
+- Shell/OS as independent axes, not one branch ✓
+- Scope: Linux VMs (existing) + this Mac (new) ✓
+- Git identity: full multi-identity config, ported from this Mac, not the old single-identity placeholder ✓
+- Claude settings: ported from this Mac's live config ✓
+- Nvim: replaced wholesale with this session's LazyVim build ✓
+- Toolchain-outside-brew: bun + Claude Code curl-installers, npm/bun global manifests — in scope; uv/zmk — deferred ✓
+- Batcave risk: confirmed no auto-sync mechanism exists; nothing here can affect it without a deliberate manual re-apply ✓
 - asdf: deferred ✓
 - Brewfile: yes ✓
