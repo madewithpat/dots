@@ -1,0 +1,27 @@
+# Named provider for Ornith-1.5-35B-A3B — self-hosted ON THIS MACHINE
+# (M4 Pro, 48GB), served via a direct llama-server instance (launchd agent
+# com.mwp.llama-server-ornith, see the `ornith` stow package). See
+# second-brain vault: 02_Areas/_homelab/activity-log.md (2026-08-20) and
+# 06_Metadata/Solutions/2026-08-20-ollama-blocks-parallel-requests-by-architecture.md
+#
+# Unlike work-dots' omp package (which reaches this same server over the LAN
+# at 10.0.0.37), this machine IS the host — baseUrl points at localhost, no
+# network dependency.
+#
+# Registered as an available provider, not the default (this machine's real
+# default isn't decided in this file — matches the work-dots precedent).
+# Switch to it with:
+#
+#   omp --model ornith-local/ornith-1.5-35b
+#
+# Only reachable while `ornith status` reports UP.
+providers:
+  ornith-local:
+    baseUrl: http://localhost:11434/v1
+    api: openai-completions
+    auth: none
+    models:
+      - id: ornith-1.5-35b
+        name: Ornith-1.5-35B-A3B (local, this Mac)
+        contextWindow: 80000
+        maxTokens: 8192

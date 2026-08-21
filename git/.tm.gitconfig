@@ -1,0 +1,10 @@
+[user]
+	name = Patrick Outler
+	email = poutler@taylormorrison.com
+	signingkey = ~/.ssh/id_ed25519_tm.pub
+
+[gpg]
+  format = ssh
+
+[commit]
+	gpgsign = true

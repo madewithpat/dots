@@ -1,7 +1,8 @@
 # dotfiles
 
 Personal dotfiles managed with [GNU Stow](https://www.gnu.org/software/stow/).
-Target: Linux VMs (Ubuntu). Shell: bash.
+Target: Linux VMs (Ubuntu, bash) **and** this Mac (macOS, zsh) — see PLAN.md
+for the full rationale and OS-conditional package selection.
 
 ## Quick start (new machine)
 
@@ -13,13 +14,22 @@ git clone git@github.com:madewithpat/dots.git ~/dots && ~/dots/bootstrap.sh
 
 ## What's managed
 
-| Package  | Config                          |
-|----------|---------------------------------|
-| `git`    | `~/.gitconfig`                  |
-| `bash`   | `~/.bashrc`, `~/.bash_profile`  |
-| `tmux`   | `~/.tmux.conf`                  |
-| `starship` | `~/.config/starship.toml`     |
-| `nvim`   | `~/.config/nvim/` (LazyVim)     |
+| Package  | Config                          | Scope |
+|----------|----------------------------------|-------|
+| `git`    | `~/.gitconfig`, `~/.mwp.gitconfig`, `~/.tm.gitconfig` | universal |
+| `shell-common` | `~/.config/shell/common.sh`, `common-interactive.sh` | universal |
+| `bash`   | `~/.bashrc`, `~/.bash_profile`  | Linux |
+| `zsh`    | `~/.zshrc`                       | macOS |
+| `tmux`   | `~/.tmux.conf`                  | universal |
+| `starship` | `~/.config/starship.toml`     | universal |
+| `nvim`   | `~/.config/nvim/` (LazyVim)     | universal |
+| `claude` | `~/.claude/settings.json`, `statusline-command.sh`, `file-suggestion.sh` | universal |
+| `ornith` | `~/.local/bin/ornith` (+ 2 helper scripts), `~/Library/LaunchAgents/com.mwp.llama-server-ornith.plist` | macOS (this Mac only — the local LLM server) |
+| `omp`    | `~/.omp/agent/models.yml` — registers `ornith-local` at `localhost:11434`, not default | macOS |
+
+`shell-common` and `bash`/`zsh` are independent axes — see PLAN.md
+Conventions. `stow.sh` picks the right set for `$(uname)` automatically;
+override with explicit package names when you want a partial apply.
 
 ## Manual stow
 

@@ -1,6 +1,11 @@
 # Machine-local files — never commit
+# (explicit names, not a bare *.local glob — that also matches a literal
+# ".local" directory, which silently swallowed ornith/.local/bin/ here)
 .DS_Store
-*.local
+.bashrc.local
+.bash_profile.local
+.gitconfig.local
+.zshrc.local
 *.bak
 *.swp
 

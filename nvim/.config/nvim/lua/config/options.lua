@@ -1,15 +1,9 @@
--- Options are set before lazy.nvim startup to avoid loading issues.
--- LazyVim's defaults cover most things; add only genuine overrides here.
-vim.g.mapleader = " "
-vim.g.maplocalleader = "\\"
+-- Options are automatically loaded before lazy.nvim startup
+-- Default options that are always set: https://github.com/LazyVim/LazyVim/blob/main/lua/lazyvim/config/options.lua
+-- Add any additional options here
 
--- Use system clipboard
-vim.opt.clipboard = "unnamedplus"
+-- Enable 24-bit (true) colors
+vim.opt.termguicolors = true
 
--- Prefer spaces, 2-wide
-vim.opt.tabstop = 2
-vim.opt.shiftwidth = 2
-vim.opt.expandtab = true
-
--- Persistent undo
-vim.opt.undofile = true
+-- Ensure child processes (like opencode in :terminal) see truecolor
+vim.env.COLORTERM = "truecolor"

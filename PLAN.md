@@ -73,9 +73,29 @@ dots/
 │                              # was here (empty lua/plugins/, one-line
 │                              # init.lua)
 │
+├── ornith/                    # stow package — macOS only, this Mac specifically
+│   ├── .local/bin/
+│   │   ├── ornith                        # start/stop/status/config CLI —
+│   │   │                                  # relocated 2026-08-21 from the
+│   │   │                                  # second-brain vault's .scripts/
+│   │   │                                  # (was ornith-ctl.sh there)
+│   │   ├── llama-server-ornith-wrapper.sh # invoked by the launchd plist below
+│   │   └── ollama-ornith-setup.sh         # one-time/occasional model pull
+│   └── Library/LaunchAgents/
+│       └── com.mwp.llama-server-ornith.plist  # ProgramArguments now points
+│                                                # at the stowed $HOME path,
+│                                                # not the vault
+│
+├── omp/                       # stow package — macOS only
+│   └── .omp/agent/models.yml  # registers ornith-local at localhost:11434 —
+│                               # available, not default (mirrors work-dots'
+│                               # precedent, which reaches the same server
+│                               # over the LAN instead)
+│
 └── macos/                    # stow package — macOS only
     └── (TBD — genuinely Mac-only config; scope not yet finalized, see
-        Open Questions)
+        Open Questions. `libpq` PATH export currently lives inline in
+        zsh/.zshrc — flagged there as a candidate for this package.)
 ```
 
 Each top-level folder is a **stow package** — a logical grouping of one tool's config. Stow symlinks the contents into `$HOME`, preserving directory structure.
@@ -204,12 +224,13 @@ chezmoi (`madewithpat/dotfiles.git`) previously managed a narrow slice of this M
 **Order matters** — content flows *from* this Mac's live config *into* this repo first, not the reverse, since this Mac's real files are more complete than what was already in this repo for `git` and `claude` (see Directory Structure notes above). Sequence:
 
 1. ✅ Branch (`plan-mac-consolidation`) — done, this plan update lives here first.
-2. Port this Mac's real `.gitconfig`, `.claude/settings.json`, and chezmoi's shell-common files into their respective packages.
-3. Add the `zsh` package.
-4. Replace the `nvim` package wholesale with this session's LazyVim config.
-5. Add the OS-conditional branch to `stow.sh`, add `npm-globals.txt`/`bun-globals.txt` + their bootstrap/packages.sh steps, add the `bun` curl-installer step.
-6. `stow --simulate` on this Mac, review the full diff, before applying anything for real.
-7. Only once the above is confirmed working: remove chezmoi's deployed files locally, uninstall/stop using chezmoi, archive `madewithpat/dotfiles` on GitHub.
+2. ✅ Port this Mac's real `.gitconfig` (+ `.mwp.gitconfig`/`.tm.gitconfig`), `.claude/settings.json` (+ `file-suggestion.sh`, not previously in the repo), and chezmoi's shell-common files into their respective packages.
+3. ✅ Add the `zsh` package.
+4. ✅ Replace the `nvim` package wholesale with this session's LazyVim config.
+5. ✅ Add the OS-conditional branch to `stow.sh`, add `npm-globals.txt`/`bun-globals.txt` + their bootstrap/packages.sh steps, add the `bun` curl-installer step.
+6. ✅ Add the `ornith` package (relocated from the second-brain vault's `.scripts/` — see Directory Structure) and the `omp` package (`ornith-local` provider pointed at `localhost:11434`, registered not default). Both macOS-only in `stow.sh`.
+7. ⬜ `stow --simulate` on this Mac, review the full diff, before applying anything for real. **Not yet run** — packages 2–6 above are built in the repo but not yet applied to this Mac's live `$HOME`, except `ornith` (relocated + live-verified 2026-08-21, see activity log) and `omp` (applied — inert, `~/.omp` didn't previously exist).
+8. ⬜ Only once the above is confirmed working: remove chezmoi's deployed files locally, uninstall/stop using chezmoi, archive `madewithpat/dotfiles` on GitHub.
 
 **What chezmoi's own strengths would have offered, and why they're not needed**: per-machine templating (not needed — OS/shell branching handled by `stow.sh`'s conditional package selection) and secrets injection (not needed — no secrets live in these dotfiles by convention; per-machine identity already handled via gitignored local includes like `.gitconfig.local`).
 
@@ -217,9 +238,7 @@ chezmoi (`madewithpat/dotfiles.git`) previously managed a narrow slice of this M
 
 ## Open Questions (decide before implementing)
 
-- **`macos` package scope**: what actually goes here? Candidates: Ghostty config, anything using `pngpaste`. Needs a real inventory pass, not yet done.
-- **`npm-globals.txt` starting contents**: carry `tree-sitter-cli`/`@mermaid-js/mermaid-cli` forward as-is (they're currently installed, just unused), or start the manifest clean and let it grow from real need?
-- **`bun-globals.txt` versioning**: pin `@tobilu/qmd` to its current git ref (`github:tobi/qmd#e428df7`, more reproducible, needs manual bumps) or track latest (simpler, can drift)?
+- **`macos` package scope**: what actually goes here? Candidates: Ghostty config, anything using `pngpaste`, the `libpq` PATH export currently inline in `zsh/.zshrc`. Needs a real inventory pass, not yet done.
 - **Git aliases**: finalized list beyond what's in the ported `.gitconfig`?
 - **Nerd Fonts on Linux**: brew casks don't work on Linux — manual install from nerd-fonts releases, or a small script in `bootstrap.sh`? Document clearly in README either way.
 - **`.bashrc` vs `.bash_profile`**: on Ubuntu, interactive login shells source `.bash_profile`; non-login interactive shells source `.bashrc`. Decide on the split before touching the `bash` package (currently untouched by this consolidation — Linux-side only).
@@ -235,3 +254,7 @@ chezmoi (`madewithpat/dotfiles.git`) previously managed a narrow slice of this M
 - Batcave risk: confirmed no auto-sync mechanism exists; nothing here can affect it without a deliberate manual re-apply ✓
 - asdf: deferred ✓
 - Brewfile: yes ✓
+- `npm-globals.txt` starting contents: started clean (empty) — `tree-sitter-cli`/`@mermaid-js/mermaid-cli` are orphaned from the removed Mermaid work, not carried forward. Add back if a real need shows up ✓
+- `bun-globals.txt` versioning: tracking latest (`@tobilu/qmd`, unpinned) — simpler, matches how it's actually installed today. Revisit pinning only if drift causes a real problem ✓
+- `ornith` package: the 3 control/serving scripts + the launchd plist moved from the second-brain vault's `.scripts/` into this repo (2026-08-21) — decided over leaving them in the vault, since PLAN.md's own "no hardcoded vault paths" convention would otherwise be violated by the alias and the plist ✓
+- `omp` default: `ornith-local` registered as an available provider, not the default — mirrors the work-dots precedent exactly, lower-surprise ✓

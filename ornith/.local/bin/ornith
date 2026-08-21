@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Start/stop/check/configure the locally-hosted Ornith-1.5-35B-A3B server.
+# Stow package: ornith (~/.local/bin/ornith) — moved here 2026-08-21 from the
+# second-brain vault's .scripts/, which is where it originally lived.
+# Usage:
+#   ornith {start|stop|restart|status}
+#   ornith config                              # show current settings
+#   ornith config --parallel N [--context N]   # change, then `restart` to apply
+#
+# Background/context (second-brain vault): 02_Areas/_homelab/activity-log.md
+# (2026-08-20), 02_Areas/_homelab/hosted-services-roadmap.md
+set -euo pipefail
+
+LABEL="com.mwp.llama-server-ornith"
+DOMAIN="gui/$(id -u)"
+PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+PORT=11434
+CONFIG_FILE="$HOME/.config/ornith/server.env"
+
+usage() {
+  cat >&2 <<EOF
+Usage: $(basename "$0") {start|stop|restart|status}
+       $(basename "$0") config                            # show current settings
+       $(basename "$0") config --parallel N [--context N] # change (restart to apply)
+EOF
+  exit 1
+}
+[[ $# -ge 1 ]] || usage
+
+ensure_config() {
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    cat > "$CONFIG_FILE" <<'DEFAULTS'
+# Ornith llama-server runtime config.
+# Edit directly, or use: ornith config --parallel N --context N
+# Restart to apply: ornith restart
+#
+# Rule of thumb from real measurement (2026-08-20, 48GB M4 Pro, Q4_K_M):
+#   ~19.9GB shared model weights (fixed, loaded once regardless of slots)
+#   + ~0.9GB per additional parallel slot at 80000 context-per-slot
+#   ~15.8GB was free headroom at 2 slots / 80k each - use that as your budget.
+#   Check real usage after any change: look for "common_memory_breakdown_print"
+#   in ~/Library/Logs/llama-server-ornith/stderr.log, or `ornith status`.
+
+ORNITH_PARALLEL=2
+ORNITH_CONTEXT_PER_SLOT=80000
+DEFAULTS
+  fi
+}
+
+case "$1" in
+  start)
+    launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null || echo "(already loaded)"
+    echo "Starting — this can take ~20-30s to come up (loading a 22GB model)."
+    ;;
+  stop)
+    launchctl bootout "$DOMAIN" "$PLIST" 2>/dev/null || echo "(already stopped)"
+    echo "Stopped."
+    ;;
+  restart)
+    launchctl kickstart -k "${DOMAIN}/${LABEL}"
+    echo "Restarting — this can take ~20-30s to come back up."
+    ;;
+  status)
+    if curl -s --max-time 2 "http://localhost:${PORT}/v1/models" >/dev/null 2>&1; then
+      echo "UP — serving on http://$(ipconfig getifaddr en0 2>/dev/null || echo localhost):${PORT}"
+      pgrep -fl "llama-server --model" || true
+    else
+      echo "DOWN"
+      launchctl print "${DOMAIN}/${LABEL}" >/dev/null 2>&1 && echo "(loaded, but not responding — check ~/Library/Logs/llama-server-ornith/stderr.log)" || echo "(not loaded)"
+    fi
+    ;;
+  config)
+    ensure_config
+    shift
+    if [[ $# -eq 0 ]]; then
+      echo "Current config ($CONFIG_FILE):"
+      grep -v '^#' "$CONFIG_FILE" | grep -v '^$'
+      exit 0
+    fi
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --parallel)
+          [[ $# -ge 2 ]] || { echo "--parallel needs a value" >&2; exit 1; }
+          sed -i '' "s/^ORNITH_PARALLEL=.*/ORNITH_PARALLEL=$2/" "$CONFIG_FILE"
+          shift 2
+          ;;
+        --context)
+          [[ $# -ge 2 ]] || { echo "--context needs a value" >&2; exit 1; }
+          sed -i '' "s/^ORNITH_CONTEXT_PER_SLOT=.*/ORNITH_CONTEXT_PER_SLOT=$2/" "$CONFIG_FILE"
+          shift 2
+          ;;
+        *)
+          echo "Unknown option: $1" >&2
+          usage
+          ;;
+      esac
+    done
+    echo "Updated. New config:"
+    grep -v '^#' "$CONFIG_FILE" | grep -v '^$'
+    echo ""
+    echo "Not applied yet — run 'ornith restart' to pick it up."
+    ;;
+  *)
+    usage
+    ;;
+esac

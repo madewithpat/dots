@@ -1,4 +1,9 @@
 {
+  "model": "sonnet",
+  "fileSuggestion": {
+    "type": "command",
+    "command": "bash $HOME/.claude/file-suggestion.sh"
+  },
   "statusLine": {
     "type": "command",
     "command": "bash $HOME/.claude/statusline-command.sh"
@@ -9,6 +14,7 @@
     "typescript-lsp@claude-plugins-official": true,
     "skill-creator@claude-plugins-official": true
   },
-  "effortLevel": "high",
+  "effortLevel": "xhigh",
+  "tui": "fullscreen",
   "agentPushNotifEnabled": true
 }
