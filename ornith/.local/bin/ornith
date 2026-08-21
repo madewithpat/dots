@@ -6,6 +6,7 @@
 #   ornith {start|stop|restart|status}
 #   ornith config                              # show current settings
 #   ornith config --parallel N [--context N]   # change, then `restart` to apply
+#   ornith config --reasoning on|off|auto [--reasoning-budget N]  # ditto
 #
 # Background/context (second-brain vault): 02_Areas/_homelab/activity-log.md
 # (2026-08-20), 02_Areas/_homelab/hosted-services-roadmap.md
@@ -22,6 +23,7 @@ usage() {
 Usage: $(basename "$0") {start|stop|restart|status}
        $(basename "$0") config                            # show current settings
        $(basename "$0") config --parallel N [--context N] # change (restart to apply)
+       $(basename "$0") config --reasoning on|off|auto [--reasoning-budget N]
 EOF
   exit 1
 }
@@ -33,6 +35,7 @@ ensure_config() {
     cat > "$CONFIG_FILE" <<'DEFAULTS'
 # Ornith llama-server runtime config.
 # Edit directly, or use: ornith config --parallel N --context N
+#                         ornith config --reasoning on|off|auto [--reasoning-budget N]
 # Restart to apply: ornith restart
 #
 # Rule of thumb from real measurement (2026-08-20, 48GB M4 Pro, Q4_K_M):
@@ -41,9 +44,21 @@ ensure_config() {
 #   ~15.8GB was free headroom at 2 slots / 80k each - use that as your budget.
 #   Check real usage after any change: look for "common_memory_breakdown_print"
 #   in ~/Library/Logs/llama-server-ornith/stderr.log, or `ornith status`.
+#
+# Reasoning (2026-08-21): this model's template supports a clean on/off
+# `enable_thinking` toggle — `--reasoning off` maps straight to it (measured:
+# ~56% fewer completion tokens on a test prompt, same correct answer, no
+# separate thinking block at all). `auto` (default) lets the template decide
+# (this model defaults to thinking-on). `--reasoning-budget N` caps thinking
+# to N tokens instead of a hard on/off (-1 = unrestricted, 0 = immediate end).
+# Client-side toggles (e.g. omp's --thinking) do NOT reach this custom
+# provider — confirmed the model keeps reasoning inline regardless. This is
+# the layer that actually works.
 
 ORNITH_PARALLEL=2
 ORNITH_CONTEXT_PER_SLOT=80000
+ORNITH_REASONING=auto
+ORNITH_REASONING_BUDGET=-1
 DEFAULTS
   fi
 }
@@ -78,16 +93,41 @@ case "$1" in
       grep -v '^#' "$CONFIG_FILE" | grep -v '^$'
       exit 0
     fi
+    # Replace KEY=... if present, else append — a plain sed replace silently
+    # no-ops on a config file written before this key existed (hit this for
+    # real: ORNITH_REASONING/ORNITH_REASONING_BUDGET added 2026-08-21, but
+    # this Mac's live server.env predated them).
+    set_kv() {
+      if grep -q "^$1=" "$CONFIG_FILE"; then
+        sed -i '' "s/^$1=.*/$1=$2/" "$CONFIG_FILE"
+      else
+        echo "$1=$2" >> "$CONFIG_FILE"
+      fi
+    }
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --parallel)
           [[ $# -ge 2 ]] || { echo "--parallel needs a value" >&2; exit 1; }
-          sed -i '' "s/^ORNITH_PARALLEL=.*/ORNITH_PARALLEL=$2/" "$CONFIG_FILE"
+          set_kv ORNITH_PARALLEL "$2"
           shift 2
           ;;
         --context)
           [[ $# -ge 2 ]] || { echo "--context needs a value" >&2; exit 1; }
-          sed -i '' "s/^ORNITH_CONTEXT_PER_SLOT=.*/ORNITH_CONTEXT_PER_SLOT=$2/" "$CONFIG_FILE"
+          set_kv ORNITH_CONTEXT_PER_SLOT "$2"
+          shift 2
+          ;;
+        --reasoning)
+          [[ $# -ge 2 ]] || { echo "--reasoning needs a value (on|off|auto)" >&2; exit 1; }
+          case "$2" in
+            on|off|auto) ;;
+            *) echo "--reasoning must be on, off, or auto (got: $2)" >&2; exit 1 ;;
+          esac
+          set_kv ORNITH_REASONING "$2"
+          shift 2
+          ;;
+        --reasoning-budget)
+          [[ $# -ge 2 ]] || { echo "--reasoning-budget needs a value" >&2; exit 1; }
+          set_kv ORNITH_REASONING_BUDGET "$2"
           shift 2
           ;;
         *)
