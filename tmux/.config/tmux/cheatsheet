@@ -1,0 +1,56 @@
+
+  TMUX CHEATSHEET                                    prefix: Ctrl-a
+ ─────────────────────────────────────────────────────────────────
+
+  SESSIONS
+  ────────
+  tmux                     Start new session
+  tmux new -s name         Start named session
+  tmux attach              Attach to last session
+  tmux attach -t name      Attach to named session
+  tmux ls                  List sessions
+  prefix d                 Detach (session keeps running)
+  prefix $                 Rename session
+  prefix S                 fzf session picker (sesh)
+  prefix F                 sesh popup picker
+
+  WINDOWS
+  ───────
+  prefix c                 New window (current path)
+  prefix ,                 Rename window
+  prefix 1-9               Switch to window by number
+  prefix n / p             Next / previous window
+  prefix &                 Kill window
+
+  PANES
+  ─────
+  prefix |                 Split horizontal (current path)
+  prefix -                 Split vertical (current path)
+  prefix h/j/k/l           Navigate panes (vim-style)
+  C-h/j/k/l                Navigate panes — passes through to vim splits
+  prefix H/J/K/L           Resize pane (repeatable, 5 cols/rows)
+  prefix Tab               Cycle pane layouts
+  prefix z                 Zoom / unzoom pane
+  prefix !                 Break pane into new window
+  prefix @                 Join pane from another window (fzf picker)
+  prefix x                 Kill pane
+
+  COPY MODE  (vi-style)
+  ─────────────────────
+  prefix Enter             Enter copy mode
+  v                        Begin selection
+  Ctrl-v                   Toggle rectangle selection
+  y                        Copy selection and exit
+  q                        Exit copy mode
+
+  PLUGINS
+  ───────
+  prefix I                 Install plugins (TPM)
+  prefix U                 Update plugins
+
+  MISC
+  ────
+  prefix r                 Reload config
+  prefix ?                 Show this cheatsheet
+  Mouse                    Enabled — click panes/windows, scroll history
+
