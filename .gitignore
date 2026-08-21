@@ -15,3 +15,10 @@ nvim/.config/nvim/lazyvim.json
 
 # Tmux — installed plugins
 tmux/.config/tmux/plugins/
+
+# omp — runtime state (session/model caches). --no-folding in stow.sh is
+# the real fix (keeps these out of ~/.omp/agent/ symlinking into this repo
+# in the first place) — this is belt-and-suspenders in case that ever lapses.
+omp/.omp/agent/*.db
+omp/.omp/agent/*.db-shm
+omp/.omp/agent/*.db-wal

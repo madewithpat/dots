@@ -37,7 +37,14 @@ if [[ $# -gt 0 ]]; then
   PACKAGES=("$@")
 fi
 
-STOW_FLAGS=(--dir="$SCRIPT_DIR" --target="$TARGET" --verbose=1)
+# --no-folding: without it, stow "folds" a package's only file into a
+# symlink of its *parent directory* when that directory doesn't yet exist
+# on the target (e.g. omp/.omp/agent/models.yml, the first time, became one
+# symlink for the whole ~/.omp/agent directory). Fine for read-only config,
+# but a real bug for any directory a tool also writes runtime state into —
+# hit this for real with omp's session/model caches landing inside this git
+# repo. Individual file symlinks only, always.
+STOW_FLAGS=(--dir="$SCRIPT_DIR" --target="$TARGET" --verbose=1 --no-folding)
 if $SIMULATE; then
   STOW_FLAGS+=(--simulate)
   echo "==> Simulating stow (no changes will be made)..."
