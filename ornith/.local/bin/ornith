@@ -7,6 +7,8 @@
 #   ornith config                              # show current settings
 #   ornith config --parallel N [--context N]   # change, then `restart` to apply
 #   ornith config --reasoning on|off|auto [--reasoning-budget N]  # ditto
+#   ornith config --temp N                     # sampling temperature, ditto
+#   ornith config --repeat-penalty N           # repeat penalty, ditto
 #
 # Background/context (second-brain vault): 02_Areas/_homelab/activity-log.md
 # (2026-08-20), 02_Areas/_homelab/hosted-services-roadmap.md
@@ -24,6 +26,8 @@ Usage: $(basename "$0") {start|stop|restart|status}
        $(basename "$0") config                            # show current settings
        $(basename "$0") config --parallel N [--context N] # change (restart to apply)
        $(basename "$0") config --reasoning on|off|auto [--reasoning-budget N]
+       $(basename "$0") config --temp N                    # sampling temperature (restart to apply)
+       $(basename "$0") config --repeat-penalty N          # repeat penalty (restart to apply)
 EOF
   exit 1
 }
@@ -59,6 +63,8 @@ ORNITH_PARALLEL=2
 ORNITH_CONTEXT_PER_SLOT=80000
 ORNITH_REASONING=auto
 ORNITH_REASONING_BUDGET=-1
+ORNITH_TEMP=1.0
+ORNITH_REPEAT_PENALTY=1.0
 DEFAULTS
   fi
 }
@@ -128,6 +134,16 @@ case "$1" in
         --reasoning-budget)
           [[ $# -ge 2 ]] || { echo "--reasoning-budget needs a value" >&2; exit 1; }
           set_kv ORNITH_REASONING_BUDGET "$2"
+          shift 2
+          ;;
+        --temp)
+          [[ $# -ge 2 ]] || { echo "--temp needs a value" >&2; exit 1; }
+          set_kv ORNITH_TEMP "$2"
+          shift 2
+          ;;
+        --repeat-penalty)
+          [[ $# -ge 2 ]] || { echo "--repeat-penalty needs a value" >&2; exit 1; }
+          set_kv ORNITH_REPEAT_PENALTY "$2"
           shift 2
           ;;
         *)

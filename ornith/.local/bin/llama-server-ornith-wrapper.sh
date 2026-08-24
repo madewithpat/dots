@@ -22,9 +22,19 @@
 #   # copy the two FROM paths in below, then restart this service:
 #   ornith restart
 #
-# Parallel slots, context-per-slot, and reasoning behavior are NOT hardcoded
-# here — they're read from ~/.config/ornith/server.env, which `ornith config`
-# edits. Adjust that instead of this file for day-to-day tuning.
+# Parallel slots, context-per-slot, reasoning behavior, and sampling temp are
+# NOT hardcoded here — they're read from ~/.config/ornith/server.env, which
+# `ornith config` edits. Adjust that instead of this file for day-to-day
+# tuning.
+#
+# Temp (2026-08-24): this model's chat-template metadata defaults to temp=1.0
+# when llama-server isn't given an explicit --temp (confirmed via the live
+# /slots endpoint before this was added — llama-server's own built-in default
+# is 0.80, so the 1.0 seen in practice was coming from the GGUF, not from
+# this wrapper or llama-server itself). ORNITH_TEMP now always passes an
+# explicit --temp so the effective value is visible in one place instead of
+# implicit in the model file. Default below (1.0) matches that prior
+# behavior exactly, so introducing this knob is a no-op until changed.
 #
 # Reasoning note (2026-08-21): this model's chat template supports a clean
 # binary `enable_thinking` toggle (checked at generation-prompt time — see
@@ -51,6 +61,8 @@ ORNITH_PARALLEL=2
 ORNITH_CONTEXT_PER_SLOT=80000
 ORNITH_REASONING=auto
 ORNITH_REASONING_BUDGET=-1
+ORNITH_TEMP=1.0
+ORNITH_REPEAT_PENALTY=1.0
 DEFAULTS
 fi
 # shellcheck disable=SC1090
@@ -59,6 +71,8 @@ ORNITH_PARALLEL="${ORNITH_PARALLEL:-2}"
 ORNITH_CONTEXT_PER_SLOT="${ORNITH_CONTEXT_PER_SLOT:-80000}"
 ORNITH_REASONING="${ORNITH_REASONING:-auto}"
 ORNITH_REASONING_BUDGET="${ORNITH_REASONING_BUDGET:--1}"
+ORNITH_TEMP="${ORNITH_TEMP:-1.0}"
+ORNITH_REPEAT_PENALTY="${ORNITH_REPEAT_PENALTY:-1.0}"
 TOTAL_CTX=$(( ORNITH_CONTEXT_PER_SLOT * ORNITH_PARALLEL ))
 
 if [[ ! -f "$GGUF_PATH" ]]; then
@@ -66,7 +80,7 @@ if [[ ! -f "$GGUF_PATH" ]]; then
   exit 1
 fi
 
-echo "Starting: -np ${ORNITH_PARALLEL} slots x ${ORNITH_CONTEXT_PER_SLOT} ctx (total -c ${TOTAL_CTX}), reasoning=${ORNITH_REASONING} budget=${ORNITH_REASONING_BUDGET}" >&2
+echo "Starting: -np ${ORNITH_PARALLEL} slots x ${ORNITH_CONTEXT_PER_SLOT} ctx (total -c ${TOTAL_CTX}), reasoning=${ORNITH_REASONING} budget=${ORNITH_REASONING_BUDGET}, temp=${ORNITH_TEMP}, repeat_penalty=${ORNITH_REPEAT_PENALTY}" >&2
 
 exec "$LLAMA_SERVER" \
   --model "$GGUF_PATH" \
@@ -85,4 +99,6 @@ exec "$LLAMA_SERVER" \
   --keep 4 \
   --reasoning "$ORNITH_REASONING" \
   --reasoning-budget "$ORNITH_REASONING_BUDGET" \
+  --temp "$ORNITH_TEMP" \
+  --repeat-penalty "$ORNITH_REPEAT_PENALTY" \
   --log-verbosity 4 --no-log-prefix --no-log-timestamps
