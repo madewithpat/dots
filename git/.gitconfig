@@ -56,9 +56,6 @@
 [includeIf "gitdir:**/mwp/"]
   path = ~/.mwp.gitconfig
 
-[includeIf "gitdir:**/chezmoi/"]
-  path = ~/.mwp.gitconfig
-
 [includeIf "gitdir:**/tm/"]
   path = ~/.tm.gitconfig
 
