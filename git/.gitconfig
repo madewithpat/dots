@@ -34,6 +34,7 @@
 
 [diff]
 	colorMoved = default
+	algorithm = histogram
 
 [merge]
 	conflictstyle = diff3
