@@ -46,6 +46,7 @@
 	gone = !git fetch --prune && git branch -vv | grep \": gone]\" | awk '{print $1}' | xargs -r git branch -d
 	Gone = !git fetch --prune && git branch -vv | grep \": gone]\" | awk '{print $1}' | xargs -r git branch -D
 	st = status -sb
+	p = pull
 	co = checkout
 	br = branch -vv
 	new = checkout -b
