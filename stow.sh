@@ -6,7 +6,7 @@ TARGET="$HOME"
 SIMULATE=false
 
 # Shell and OS are independent axes — see PLAN.md Conventions.
-UNIVERSAL=(git shell-common tmux starship claude nvim)
+UNIVERSAL=(git shell-common tmux starship claude nvim dvc)
 case "$(uname)" in
   Darwin) PACKAGES=("${UNIVERSAL[@]}" zsh ornith omp) ;;
   Linux)  PACKAGES=("${UNIVERSAL[@]}" bash) ;;

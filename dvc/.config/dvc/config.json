@@ -1,0 +1,54 @@
+{
+  "defaultProfile": "base",
+
+  "dotfiles": {
+    "repository": "git@gh-ggt:ggt-patrick-outler/dots.git",
+    "installCommand": "devcontainer/install.sh",
+    "targetPath": "~/dotfiles"
+  },
+
+  "profiles": {
+    "base": {
+      "sshAgent": true,
+      "ssh": {
+        "config": "~/.ssh/config",
+        "knownHosts": "~/.ssh/known_hosts",
+        "publicKeys": [
+          "~/.ssh/id_ed25519.pub",
+          "~/.ssh/id_ed25519_mwp.pub"
+        ]
+      },
+      "gitconfigs": [
+        {
+          "source": "~/.gitconfig",
+          "target": "/mnt/gitconfigs/global",
+          "setGlobal": true
+        },
+        {
+          "source": "~/.mwp.gitconfig",
+          "target": "/mnt/gitconfigs/mwp"
+        }
+      ],
+      "features": {},
+      "tools": {
+        "nvim": {
+          "mode": "mount"
+        },
+        "claude": {
+          "install": true,
+          "mode": "mount"
+        },
+        "gh": {
+          "install": true,
+          "mode": "mount"
+        },
+        "omp": {
+          "install": true,
+          "mode": "mount"
+        }
+      },
+      "mounts": [],
+      "env": {}
+    }
+  }
+}
