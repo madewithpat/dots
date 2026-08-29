@@ -101,7 +101,7 @@ fi
 # ── Post-bootstrap reminders ──────────────────────────────────────────────────
 echo ""
 echo "Reminders:"
-echo "  - Set up git identity: create ~/.gitconfig.local with [user] name/email"
+echo "  - Set up git identity: create ~/.gitconfig.local with [user] name/email/signingkey (required — this repo's git config signs commits by default; see README)"
 echo "  - Nerd Fonts: install manually from https://www.nerdfonts.com/font-downloads"
 echo "    (brew casks don't work on Linux)"
 echo "  - Machine-specific shell config: ~/.bashrc.local"

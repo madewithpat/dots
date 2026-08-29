@@ -54,15 +54,16 @@ These files are gitignored and never committed:
 
 | File | Purpose |
 |------|---------|
-| `~/.gitconfig.local` | Git identity (`[user]` name/email), per-machine settings |
+| `~/.gitconfig.local` | Git identity (`[user]` name/email/signingkey), per-machine settings |
 | `~/.bashrc.local` | Machine-specific shell config, extra PATH entries, etc. |
 
-Minimum `~/.gitconfig.local`:
+`~/.gitconfig.local`, mirroring the `.mwp.gitconfig`/`.tm.gitconfig` pattern (this repo's `[gpg]`/`[commit]` config expects SSH-format commit signing, so `signingkey` is required unless you also set `commit.gpgsign = false` locally):
 
 ```ini
 [user]
     name = Your Name
     email = you@example.com
+    signingkey = ~/.ssh/your_key.pub
 ```
 
 ## Nerd Fonts (Linux)
