@@ -16,7 +16,7 @@ git clone git@github.com:madewithpat/dots.git ~/dots && ~/dots/bootstrap.sh
 
 | Package  | Config                          | Scope |
 |----------|----------------------------------|-------|
-| `git`    | `~/.gitconfig`, `~/.mwp.gitconfig`, `~/.tm.gitconfig` | universal |
+| `git`    | `~/.gitconfig` (identity comes from `~/.gitconfig.local`, `~/.mwp.gitconfig`, etc. — see [Machine-local overrides](#machine-local-overrides)) | universal |
 | `shell-common` | `~/.config/shell/common.sh`, `common-interactive.sh` | universal |
 | `bash`   | `~/.bashrc`, `~/.bash_profile`  | Linux |
 | `zsh`    | `~/.zshrc`                       | macOS |
@@ -50,21 +50,27 @@ stow --delete --dir=. --target=$HOME <package>
 
 ## Machine-local overrides
 
-These files are gitignored and never committed:
+These files are gitignored (or, for `.mwp.gitconfig`/`.tm.gitconfig`, simply never shipped by this repo) and never committed:
 
 | File | Purpose |
 |------|---------|
-| `~/.gitconfig.local` | Git identity (`[user]` name/email/signingkey), per-machine settings |
+| `~/.gitconfig.local` | Default git identity (`[user]` name/email/signingkey) + any `[url "..."] insteadOf` SSH host-alias rewrites for your employer/client GitHub orgs — these name real orgs, so they don't belong in a public repo |
+| `~/.mwp.gitconfig`, `~/.tm.gitconfig`, ... | Directory-scoped identity overrides, targeted by `git/.gitconfig`'s `includeIf "gitdir:**/<name>/"` blocks. Same shape as `~/.gitconfig.local`'s `[user]` section, one file per identity you need. Not shipped by this repo (they'd carry real emails) — create the ones you need locally. |
 | `~/.bashrc.local` | Machine-specific shell config, extra PATH entries, etc. |
 
-`~/.gitconfig.local`, mirroring the `.mwp.gitconfig`/`.tm.gitconfig` pattern (this repo's `[gpg]`/`[commit]` config expects SSH-format commit signing, so `signingkey` is required unless you also set `commit.gpgsign = false` locally):
+`~/.gitconfig.local` (this repo's `[gpg]`/`[commit]` config expects SSH-format commit signing, so `signingkey` is required unless you also set `commit.gpgsign = false` locally):
 
 ```ini
 [user]
     name = Your Name
     email = you@example.com
     signingkey = ~/.ssh/your_key.pub
+
+[url "git@gh-someorg:someorg"]
+    insteadOf = git@github.com:someorg
 ```
+
+A directory-scoped override (e.g. `~/.mwp.gitconfig`, matched by `[includeIf "gitdir:**/mwp/"]`) has the same `[user]` shape, no `[url]` section needed.
 
 ## Nerd Fonts (Linux)
 

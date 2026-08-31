@@ -62,17 +62,6 @@
 [includeIf "gitdir:**/tm/"]
   path = ~/.tm.gitconfig
 
-[url "git@gh:GRIFFINglobaltech"]
-  insteadOf = git@github.com:GRIFFINglobaltech
-
-[url "git@gh:ggt-patrick-outler"]
-  insteadOf = git@github.com:ggt-patrick-outler
-
-[url "git@gh-tm:taylormorrison"]
-  insteadOf = git@github.com:taylormorrison
-
-[url "git@gh-otter:OtterSolv"]
-  insteadOf = git@github.com:OtterSolv
-
-[url "git@gh-mwp:madewithpat"]
-  insteadOf = git@github.com:madewithpat
+# Per-org SSH host-alias URL rewrites ([url "git@gh-x:org"] insteadOf =
+# git@github.com:org) also belong in ~/.gitconfig.local, not here — they
+# name real employer/client GitHub orgs and don't belong in a public repo.
