@@ -25,7 +25,7 @@ git clone git@github.com:madewithpat/dots.git ~/dots && ~/dots/bootstrap.sh
 | `nvim`   | `~/.config/nvim/` (LazyVim)     | universal |
 | `claude` | `~/.claude/settings.json`, `statusline-command.sh`, `file-suggestion.sh` | universal |
 | `ornith` | `~/.local/bin/ornith` (+ 2 helper scripts), `~/Library/LaunchAgents/com.mwp.llama-server-ornith.plist` | macOS (this Mac only — the local LLM server) |
-| `omp`    | `~/.omp/agent/models.yml` — registers `ornith-local` at `localhost:11434`, not default | macOS |
+| `omp`    | `~/.omp/agent/models.yml` — registers `ornith-local` at `localhost:11434`, not default; `~/.omp/agent/config.yml` — statusLine/theme/task/model-role preferences | macOS |
 | `dvc`    | `~/.local/bin/dvc`, `~/.config/dvc/config.json` — profile-based devcontainer wrapper (`dvc build/up/exec/shell/status/...`); named `dvc` not `dc` since `/usr/bin/dc` (the calculator) already owns that name. Ported from work-dots' `dc` package — `bootstrap`/`doctor` subcommands are wired but inert until the matching `devcontainer/` package is also ported. | universal |
 
 `shell-common` and `bash`/`zsh` are independent axes — see PLAN.md
@@ -55,7 +55,8 @@ These files are gitignored (or, for `.mwp.gitconfig`/`.tm.gitconfig`, simply nev
 | File | Purpose |
 |------|---------|
 | `~/.gitconfig.local` | Default git identity (`[user]` name/email/signingkey) + any `[url "..."] insteadOf` SSH host-alias rewrites for your employer/client GitHub orgs — these name real orgs, so they don't belong in a public repo |
-| `~/.mwp.gitconfig`, `~/.tm.gitconfig`, ... | Directory-scoped identity overrides, targeted by `git/.gitconfig`'s `includeIf "gitdir:**/<name>/"` blocks. Same shape as `~/.gitconfig.local`'s `[user]` section, one file per identity you need. Not shipped by this repo (they'd carry real emails) — create the ones you need locally. |
+| `~/.mwp.gitconfig` | Identity for the `gitdir:**/mwp/` includeIf shipped in `git/.gitconfig` (this repo's own namesake — already public). Same `[user]` shape as `~/.gitconfig.local`. Not shipped by this repo (it'd carry a real email) — create it locally. |
+| `~/.tm.gitconfig`, ... (any other client/employer identity) | Same shape, but the `includeIf "gitdir:**/<name>/"` block that targets it also isn't shipped — even the directory-pattern name can be identifying. Add both the includeIf block and the `[user]` identity to `~/.gitconfig.local` yourself (see example below). |
 | `~/.bashrc.local` | Machine-specific shell config, extra PATH entries, etc. |
 
 `~/.gitconfig.local` (this repo's `[gpg]`/`[commit]` config expects SSH-format commit signing, so `signingkey` is required unless you also set `commit.gpgsign = false` locally):
@@ -68,9 +69,17 @@ These files are gitignored (or, for `.mwp.gitconfig`/`.tm.gitconfig`, simply nev
 
 [url "git@gh-someorg:someorg"]
     insteadOf = git@github.com:someorg
+
+# Optional: a directory-scoped override for a specific client/employer.
+# `~/.mwp.gitconfig` (matched by `[includeIf "gitdir:**/mwp/"]` in
+# git/.gitconfig) is the one exception shipped by this repo, since `mwp` is
+# its own public namesake — everything else, pattern name included, stays
+# local like this:
+[includeIf "gitdir:**/someclient/"]
+    path = ~/.someclient.gitconfig
 ```
 
-A directory-scoped override (e.g. `~/.mwp.gitconfig`, matched by `[includeIf "gitdir:**/mwp/"]`) has the same `[user]` shape, no `[url]` section needed.
+`~/.mwp.gitconfig` / `~/.someclient.gitconfig` have the same `[user]` shape as `~/.gitconfig.local`, no `[url]` section needed.
 
 ## Nerd Fonts (Linux)
 

@@ -59,9 +59,11 @@
 [includeIf "gitdir:**/mwp/"]
   path = ~/.mwp.gitconfig
 
-[includeIf "gitdir:**/tm/"]
-  path = ~/.tm.gitconfig
-
+# Additional client/employer-specific includeIf blocks (e.g. for
+# gitdir:**/<client>/) belong in ~/.gitconfig.local, not here — even the
+# directory-pattern name can be identifying. `mwp` stays here since it's
+# this repo's own namesake (github.com/madewithpat/dots), already public.
+#
 # Per-org SSH host-alias URL rewrites ([url "git@gh-x:org"] insteadOf =
 # git@github.com:org) also belong in ~/.gitconfig.local, not here — they
 # name real employer/client GitHub orgs and don't belong in a public repo.
