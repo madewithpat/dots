@@ -42,6 +42,17 @@ if command -v zoxide &>/dev/null; then
   eval "$(zoxide init bash)"
 fi
 
+# ── yazi ──────────────────────────────────────────────────────────────────────
+if command -v yazi &>/dev/null; then
+  function y() {
+    local tmp="$(mktemp -t "yazi-cwd.XXXXXX")" cwd
+    command yazi "$@" --cwd-file="$tmp"
+    IFS= read -r -d '' cwd <"$tmp"
+    [ "$cwd" != "$PWD" ] && [ -d "$cwd" ] && builtin cd -- "$cwd"
+    command rm -f -- "$tmp"
+  }
+fi
+
 # ── starship prompt ───────────────────────────────────────────────────────────
 if command -v starship &>/dev/null; then
   eval "$(starship init bash)"
@@ -58,6 +69,7 @@ alias mkdir='mkdir -p'
 alias cp='cp -i'
 alias mv='mv -i'
 alias rm='rm -i'
+alias sp='sesh-picker'
 
 # git shorthand (beyond what's in .gitconfig)
 alias g='git'

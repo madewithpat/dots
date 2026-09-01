@@ -7,10 +7,13 @@ brew "ripgrep"
 brew "fd"
 brew "fzf"
 brew "zoxide"
+brew "yazi"
 brew "starship"
 
 # ── Neovim + LazyVim stack ────────────────────────────────────────────────────
 brew "neovim"
+brew "lazygit"
+brew "tree-sitter-cli" # nvim-treesitter shells out to `tree-sitter build`
 # ripgrep, fd, fzf shared with above
 
 # ── Dev / cloud tools ─────────────────────────────────────────────────────────

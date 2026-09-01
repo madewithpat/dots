@@ -19,6 +19,7 @@ for dir in .config/nvim .config/starship.toml .config/tmux .config/shell \
   .claude/settings.json .claude/statusline-command.sh .claude/file-suggestion.sh \
   .omp/agent/models.yml \
   .local/bin/ornith .local/bin/llama-server-ornith-wrapper.sh .local/bin/ollama-ornith-setup.sh \
+  .local/bin/sesh-picker \
   Library/LaunchAgents/com.mwp.llama-server-ornith.plist; do
   target="$HOME/$dir"
   if [[ -e "$target" && ! -L "$target" ]]; then
@@ -27,7 +28,10 @@ for dir in .config/nvim .config/starship.toml .config/tmux .config/shell \
   fi
 done
 
-# ── Step 2: Install Homebrew (Linuxbrew) ──────────────────────────────────────
+# ── Step 2: Install apt packages (Linux only) ─────────────────────────────────
+"$SCRIPT_DIR/apt.sh"
+
+# ── Step 3: Install Homebrew (Linuxbrew) ──────────────────────────────────────
 if ! command -v brew &>/dev/null; then
   echo "==> Installing Homebrew..."
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -42,10 +46,10 @@ else
   echo "==> Homebrew already installed, skipping."
 fi
 
-# ── Step 3: Install packages ──────────────────────────────────────────────────
+# ── Step 4: Install packages ──────────────────────────────────────────────────
 "$SCRIPT_DIR/packages.sh"
 
-# ── Step 4: Install Claude Code ───────────────────────────────────────────────
+# ── Step 5: Install Claude Code ───────────────────────────────────────────────
 if ! command -v claude &>/dev/null; then
   echo "==> Installing Claude Code..."
   curl -fsSL https://claude.ai/install.sh | bash
@@ -53,7 +57,7 @@ else
   echo "==> Claude Code already installed, skipping."
 fi
 
-# ── Step 4b: Install bun ──────────────────────────────────────────────────────
+# ── Step 5b: Install bun ──────────────────────────────────────────────────────
 if ! command -v bun &>/dev/null; then
   echo "==> Installing bun..."
   curl -fsSL https://bun.sh/install | bash
@@ -61,7 +65,7 @@ else
   echo "==> bun already installed, skipping."
 fi
 
-# ── Step 4c: Install oh-my-pi (omp) — macOS only for now, see stow.sh ─────────
+# ── Step 5c: Install oh-my-pi (omp) — macOS only for now, see stow.sh ─────────
 if [[ "$(uname)" == "Darwin" ]] && ! command -v omp &>/dev/null; then
   echo "==> Installing oh-my-pi (omp)..."
   curl -fsSL https://omp.sh/install | sh
@@ -69,7 +73,7 @@ elif [[ "$(uname)" == "Darwin" ]]; then
   echo "==> omp already installed, skipping."
 fi
 
-# ── Step 5: Bootstrap TPM ────────────────────────────────────────────────────
+# ── Step 6: Bootstrap TPM ────────────────────────────────────────────────────
 TPM_DIR="$HOME/.tmux/plugins/tpm"
 if [[ ! -d "$TPM_DIR" ]]; then
   echo "==> Installing TPM..."
@@ -78,7 +82,7 @@ else
   echo "==> TPM already installed, skipping."
 fi
 
-# ── Step 6: Dry-run stow — review before committing ──────────────────────────
+# ── Step 7: Dry-run stow — review before committing ──────────────────────────
 echo ""
 echo "==> Simulating stow (dry run)..."
 "$SCRIPT_DIR/stow.sh" --simulate
@@ -87,10 +91,10 @@ echo ""
 # Prompt before applying
 read -r -p "Apply stow symlinks? [y/N] " answer
 if [[ "$answer" =~ ^[Yy]$ ]]; then
-  # ── Step 7: Apply stow ───────────────────────────────────────────────────
+  # ── Step 8: Apply stow ───────────────────────────────────────────────────
   "$SCRIPT_DIR/stow.sh"
 
-  # ── Step 8: Source shell config ──────────────────────────────────────────
+  # ── Step 9: Source shell config ──────────────────────────────────────────
   echo ""
   echo "==> Bootstrap complete!"
   echo "    Run: source ~/.bashrc (Linux) or source ~/.zshrc (macOS)"

@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+require() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'sesh-picker: %s is required\n' "$1" >&2
+    exit 127
+  fi
+}
+
+list_sessions() {
+  case "${1:-all}" in
+  all)
+    sesh list --icons 2>/dev/null && return 0
+    sesh list -t --icons 2>/dev/null || true
+    sesh list -c --icons 2>/dev/null || true
+    sesh list -T --icons 2>/dev/null || true
+    zoxide query -l 2>/dev/null || true
+    ;;
+  tmux)
+    sesh list -t --icons 2>/dev/null || true
+    ;;
+  configs)
+    sesh list -c --icons 2>/dev/null || true
+    ;;
+  zoxide)
+    sesh list -z --icons 2>/dev/null || zoxide query -l 2>/dev/null || true
+    ;;
+  find)
+    fd -H -d 2 -t d -E .Trash . "$HOME" 2>/dev/null || true
+    ;;
+  *)
+    printf 'sesh-picker: unknown list mode: %s\n' "$1" >&2
+    return 2
+    ;;
+  esac
+}
+
+new_session() {
+  local name="${*:-}"
+
+  if [[ -z "$name" ]]; then
+    read -r -p "New session: " name
+  fi
+
+  [[ -n "$name" ]] || exit 0
+  exec sesh connect "$name"
+}
+
+if [[ "${1:-}" == "--list" ]]; then
+  shift
+  require sesh
+  list_sessions "${1:-all}"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--new" ]]; then
+  shift
+  require sesh
+  new_session "$@"
+fi
+
+require sesh
+require fzf
+require fd
+require zoxide
+
+self="${BASH_SOURCE[0]}"
+if [[ "$self" != */* ]]; then
+  self="$(command -v -- "$self")"
+fi
+printf -v self_q '%q' "$self"
+
+if [[ -n "${TMUX:-}" ]] && command -v fzf-tmux >/dev/null 2>&1; then
+  fzf_cmd=(fzf-tmux -p 80%,70%)
+else
+  fzf_cmd=(fzf --height 100% --border)
+fi
+
+selected="$(
+  "$self" --list all | "${fzf_cmd[@]}" \
+    --no-sort --ansi --border-label ' sesh ' --prompt 'sesh> ' \
+    --layout=reverse \
+    --header 'ctrl-a all | ctrl-t tmux | ctrl-g configs | ctrl-x zoxide | ctrl-f find | ctrl-n new | ctrl-d kill tmux' \
+    --bind 'tab:down,btab:up' \
+    --bind "ctrl-a:change-prompt(sesh> )+reload($self_q --list all)" \
+    --bind "ctrl-t:change-prompt(tmux> )+reload($self_q --list tmux)" \
+    --bind "ctrl-g:change-prompt(config> )+reload($self_q --list configs)" \
+    --bind "ctrl-x:change-prompt(zoxide> )+reload($self_q --list zoxide)" \
+    --bind "ctrl-f:change-prompt(find> )+reload($self_q --list find)" \
+    --bind "ctrl-n:become($self_q --new {q})" \
+    --bind "ctrl-d:execute-silent(tmux kill-session -t {2..})+reload($self_q --list all)" \
+    --preview-window 'right:55%' \
+    --preview 'if command -v tmux >/dev/null 2>&1 && tmux has-session -t {2..} 2>/dev/null; then tmux capture-pane -ep -t {2..}; else sesh preview {} 2>/dev/null; fi' \
+    "$@"
+)" || exit 0
+
+[[ -n "$selected" ]] || exit 0
+exec sesh connect "$selected"
