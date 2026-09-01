@@ -77,7 +77,6 @@ Organized into logical groups for readability in the Brewfile:
 - `awscli`
 
 **AI tools**
-- `opencode`
 - Claude Code — installed separately via `curl -fsSL https://claude.ai/install.sh | bash` (not a brew package)
 
 **Future (not in initial Brewfile)**

@@ -108,4 +108,4 @@ git add <toolname> && git commit -m "add <toolname> config"
 - **Shell**: `git`, `tree`, `tmux`, `stow`, `ripgrep`, `fd`, `fzf`, `zoxide`, `starship`
 - **Editor**: `neovim`
 - **Dev/cloud**: `gh`, `awscli`
-- **AI**: `opencode`, Claude Code (installed separately via `curl` installer)
+- **AI**: Claude Code (installed separately via `curl` installer)

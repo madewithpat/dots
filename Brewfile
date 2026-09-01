@@ -18,6 +18,5 @@ brew "gh"
 brew "awscli"
 
 # ── AI tools ──────────────────────────────────────────────────────────────────
-brew "opencode"
 # Claude Code: installed separately via curl installer, not a brew package
 # See bootstrap.sh step 4

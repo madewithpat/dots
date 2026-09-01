@@ -5,5 +5,5 @@
 -- Enable 24-bit (true) colors
 vim.opt.termguicolors = true
 
--- Ensure child processes (like opencode in :terminal) see truecolor
+-- Ensure child processes in :terminal see truecolor
 vim.env.COLORTERM = "truecolor"
