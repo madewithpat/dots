@@ -1,3 +1,21 @@
+[filter "lfs"]
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+	required = true
+
+# Machine-local default identity (gitignored, not stowed). Must come before
+# the includeIf blocks below — git config resolution is order-dependent, so
+# a directory-scoped override only wins if it's read *after* this default.
+[include]
+	path = ~/.gitconfig.local
+
+[gpg]
+  format = ssh
+
+[commit]
+	gpgsign = true
+
 [core]
 	editor = nvim
 	autocrlf = input
@@ -17,13 +35,20 @@
 
 [diff]
 	colorMoved = default
+	algorithm = histogram
 
 [merge]
 	conflictstyle = diff3
 
+[color]
+	ui = auto
+
 [alias]
-	lg = log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit
+	lg = log --color --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset [%G?]' --abbrev-commit
+	gone = !git fetch --prune && git branch -vv | grep \": gone]\" | awk '{print $1}' | xargs -r git branch -d
+	Gone = !git fetch --prune && git branch -vv | grep \": gone]\" | awk '{print $1}' | xargs -r git branch -D
 	st = status -sb
+	p = pull
 	co = checkout
 	br = branch -vv
 	new = checkout -b
@@ -31,9 +56,14 @@
 	amend = commit --amend --no-edit
 	aliases = config --get-regexp alias
 
-[color]
-	ui = auto
+[includeIf "gitdir:**/mwp/"]
+  path = ~/.mwp.gitconfig
 
-# Machine-local identity and overrides (not committed)
-[include]
-	path = ~/.gitconfig.local
+# Additional client/employer-specific includeIf blocks (e.g. for
+# gitdir:**/<client>/) belong in ~/.gitconfig.local, not here — even the
+# directory-pattern name can be identifying. `mwp` stays here since it's
+# this repo's own namesake (github.com/madewithpat/dots), already public.
+#
+# Per-org SSH host-alias URL rewrites ([url "git@gh-x:org"] insteadOf =
+# git@github.com:org) also belong in ~/.gitconfig.local, not here — they
+# name real employer/client GitHub orgs and don't belong in a public repo.

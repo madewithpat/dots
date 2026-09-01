@@ -1,0 +1,1842 @@
+#!/usr/bin/env bash
+# dvc — devcontainer wrapper with profile-based configuration
+#
+# Usage (pick one):
+#   source /path/to/dotfiles/bin/dvc    # adds dvc() to current shell session
+#   export PATH="/path/to/dotfiles/bin:$PATH"  # use as standalone script
+#
+# Configuration:
+#   - ~/.config/dvc/config.json is the user-level configuration.
+#   - ~/.config/dvc/projects/<project-key>.json is an optional, user-owned
+#     overlay for the current project. It never lives in the project checkout.
+#   - <parent-directory>/.dvc/config.json files are optional directory overlays.
+#     They are discovered between the project root and $HOME, never inside the
+#     project checkout, and allow a directory such as ~/src/otter to define a
+#     profile for all of its child repositories.
+#   - DVC_CONFIG_PATH and DVC_PROJECT_CONFIG_PATH override those paths when a
+#     different configuration location is useful.
+#
+# Subcommands:
+#   dvc build [-p|--profile <name>] [devcontainer-build-args...]
+#   dvc up [-p|--profile <name>] [-r|--remove-existing-container] [devcontainer-up-args...]
+#   dvc exec [-p|--profile <name>] [devcontainer-exec-args...]
+#   dvc shell [-p|--profile <name>]
+#   dvc bootstrap [-p|--profile <name>]
+#   dvc doctor [-p|--profile <name>]
+#   dvc config paths
+#   dvc * — passes through to devcontainer unchanged
+#
+# Profile support:
+#   --profile selects which profile to use. If not specified, uses the cached
+#   profile from the last 'build' or 'up' in this workspace, or defaultProfile.
+#   Profiles are defined in the user config or the external project overlay and
+#   control mounts, env vars, Features, and personal tool configuration.
+#
+# Caching:
+#   The profile used at 'build' or 'up' time is cached per workspace in
+#   ~/.cache/dvc/<workspace>/profile. This is used to maintain consistency.
+
+set -euo pipefail
+
+_dvc_warn() { printf 'dvc: warn: %s\n' "$1" >&2; }
+_dvc_error() { printf 'dvc: error: %s\n' "$1" >&2; exit 1; }
+
+_DVC_CONFIG_FILE=""
+_DVC_PROJECT_CONFIG_FILE=""
+_DVC_PROFILE=""
+_DVC_CONFIG_JSON=""
+_DVC_FILTERED_ARGS=()
+
+_dvc_cache_dir() {
+  printf '%s/dvc\n' "${XDG_CACHE_HOME:-${HOME}/.cache}"
+}
+
+_dvc_has_workspace() {
+  [[ -f ".devcontainer/devcontainer.json" ]] || [[ -f ".devcontainer.json" ]]
+}
+
+_dvc_workspace_config_file() {
+  local workspace
+  workspace="$(pwd -P)"
+
+  if [[ -f ".devcontainer/devcontainer.json" ]]; then
+    printf '%s/.devcontainer/devcontainer.json\n' "$workspace"
+  elif [[ -f ".devcontainer.json" ]]; then
+    printf '%s/.devcontainer.json\n' "$workspace"
+  else
+    return 1
+  fi
+}
+
+# Some tools (omp) have no config-dir override env var — they always read a
+# fixed path under $HOME. Mounting those in "mount" mode requires knowing the
+# remote container's home directory ahead of container creation, which means
+# reading it straight out of devcontainer.json's remoteUser/containerUser
+# field (devcontainer.json permits // and /* */ comments and trailing commas,
+# so this is a tolerant, not strict, JSON parse).
+_dvc_remote_user() {
+  local config_file
+  config_file="$(_dvc_workspace_config_file)" || return 1
+
+  python3 - "$config_file" <<'PY' 2>/dev/null
+import json
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+text = re.sub(r"//[^\n]*", "", text)
+text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+text = re.sub(r",(\s*[}\]])", r"\1", text)
+
+try:
+    config = json.loads(text)
+except Exception:
+    sys.exit(1)
+
+user = config.get("remoteUser") or config.get("containerUser")
+if not user:
+    sys.exit(1)
+print(user)
+PY
+}
+
+_dvc_remote_home() {
+  local user
+  user="$(_dvc_remote_user)" || return 1
+
+  if [[ "$user" == "root" ]]; then
+    printf '/root\n'
+  else
+    printf '/home/%s\n' "$user"
+  fi
+}
+
+# Directory-level mount target for one of omp's directories in "mount" mode.
+# Prefers a real bind mount straight onto the equivalent path under the
+# remote home (works with no further setup); falls back to a fixed /mnt/dvc
+# path, which requires devcontainer/install.sh to symlink the real path to it
+# during `dvc bootstrap`, when the remote home can't be determined.
+_dvc_omp_xdg_mount_target() {
+  local home_subpath="$1" fallback="$2"
+  local remote_home
+  if remote_home="$(_dvc_remote_home)"; then
+    printf '%s/%s\n' "$remote_home" "$home_subpath"
+  else
+    printf '%s\n' "$fallback"
+  fi
+}
+
+# omp keeps state beyond its ~/.omp config root: XDG data (marketplace
+# registry), XDG state (daemon runtime dirs, a secret-placeholder key), and
+# XDG cache — all under a fixed "omp" subdir, unset by default. Each needs
+# its own mount for the container to see the same install as the host.
+_dvc_omp_mount_target() { _dvc_omp_xdg_mount_target ".omp" "/mnt/dvc/omp"; }
+_dvc_omp_share_mount_target() { _dvc_omp_xdg_mount_target ".local/share/omp" "/mnt/dvc/omp-share"; }
+_dvc_omp_state_mount_target() { _dvc_omp_xdg_mount_target ".local/state/omp" "/mnt/dvc/omp-state"; }
+_dvc_omp_cache_mount_target() { _dvc_omp_xdg_mount_target ".cache/omp" "/mnt/dvc/omp-cache"; }
+
+_dvc_existing_container_id() {
+  local include_stopped="${1:-false}"
+  local workspace config_file docker_ps_args=() container_id
+  workspace="$(pwd -P)"
+  config_file="$(_dvc_workspace_config_file)" || return 1
+
+  if [[ "$include_stopped" == "true" ]]; then
+    docker_ps_args=(ps -aq)
+  else
+    docker_ps_args=(ps -q)
+  fi
+
+  # Containers created by dvc and the standalone Dev Container CLI use the
+  # Linux workspace path. VS Code launched from Windows/WSL may instead write
+  # a UNC value here, while retaining the canonical config-file label.
+  container_id="$(docker "${docker_ps_args[@]}" \
+    --filter "label=devcontainer.local_folder=${workspace}" \
+    --filter "label=devcontainer.config_file=${config_file}" | head -n 1)"
+  if [[ -z "$container_id" ]]; then
+    container_id="$(docker "${docker_ps_args[@]}" \
+      --filter "label=devcontainer.local_folder=${workspace}" | head -n 1)"
+  fi
+  if [[ -z "$container_id" ]]; then
+    container_id="$(docker "${docker_ps_args[@]}" \
+      --filter "label=devcontainer.config_file=${config_file}" | head -n 1)"
+  fi
+
+  [[ -n "$container_id" ]] || return 1
+  printf '%s\n' "$container_id"
+}
+
+_dvc_exec_running_container() {
+  local container_id workspace
+  container_id="$(_dvc_existing_container_id)" || container_id=""
+  workspace="$(pwd -P)"
+
+  if [[ -n "$container_id" ]]; then
+    # With --container-id, the Dev Container CLI does not otherwise load the
+    # workspace configuration. Supplying it lets the CLI resolve
+    # devcontainer.json's workspaceFolder instead of falling back to the
+    # remote user's home directory.
+    devcontainer exec "${_DVC_EXEC_ENV_ARGS[@]}" \
+      --container-id "$container_id" \
+      --workspace-folder "$workspace" \
+      "$@"
+  else
+    devcontainer exec "${_DVC_EXEC_ENV_ARGS[@]}" \
+      --workspace-folder "$workspace" \
+      "$@"
+  fi
+}
+
+_dvc_workspace_key() {
+  local pwd
+  pwd="$(pwd)"
+  printf '%s' "$pwd" | sed 's|/|-|g' | sed 's/^-//'
+}
+
+_dvc_get_cached_profile() {
+  _dvc_has_workspace || return 1
+
+  local cache_dir workspace_key profile_file
+  cache_dir="$(_dvc_cache_dir)"
+  workspace_key="$(_dvc_workspace_key)"
+  profile_file="${cache_dir}/${workspace_key}/profile"
+
+  if [[ -f "$profile_file" ]]; then
+    cat "$profile_file"
+  else
+    return 1
+  fi
+}
+
+_dvc_save_profile() {
+  local profile="$1"
+
+  _dvc_has_workspace || return 0
+
+  local cache_dir workspace_key profile_file
+  cache_dir="$(_dvc_cache_dir)"
+  workspace_key="$(_dvc_workspace_key)"
+  profile_file="${cache_dir}/${workspace_key}/profile"
+
+  mkdir -p "${cache_dir}/${workspace_key}"
+  printf '%s' "$profile" > "$profile_file"
+}
+
+_dvc_find_user_config_file() {
+  if [[ -n "${DVC_CONFIG_PATH:-}" ]]; then
+    if [[ -f "$DVC_CONFIG_PATH" ]]; then
+      printf '%s' "$DVC_CONFIG_PATH"
+      return 0
+    else
+      _dvc_error "DVC_CONFIG_PATH set to '$DVC_CONFIG_PATH' but file does not exist"
+    fi
+  fi
+
+  local default_config="${HOME}/.config/dvc/config.json"
+  if [[ -f "$default_config" ]]; then
+    printf '%s' "$default_config"
+    return 0
+  fi
+
+  return 1
+}
+
+_dvc_project_root() {
+  local common_git_dir
+
+  if common_git_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    if [[ "$(basename "$common_git_dir")" == ".git" ]]; then
+      dirname "$common_git_dir"
+      return 0
+    fi
+  fi
+
+  pwd
+}
+
+# Git's own worktree bookkeeping (.git/worktrees/<name>/gitdir, and the
+# matching .git file inside each linked worktree) stores *absolute* host
+# paths, recorded at `git worktree add` time. A devcontainer's
+# workspaceFolder is usually a different absolute path (e.g.
+# /workspaces/<name> vs this project's real host path under
+# ~/src/<org>/<name>), so `git worktree list`/worktrunk report every
+# worktree missing/prunable from inside the container even though the
+# directories are right there — just under a path git doesn't recognize.
+# Mount the host project root onto its own identical absolute path too, so
+# git's absolute-path bookkeeping resolves without ever needing
+# `git worktree repair` (which would rewrite that bookkeeping to the
+# container's path and break the host in the process — same underlying
+# files via the same bind mount). Doesn't help a worktree that lives
+# outside this project root entirely (a sibling checkout) — only the
+# common case of worktrees nested under the project itself.
+_dvc_add_project_root_mirror_mount() {
+  local project_root
+  project_root="$(cd "$(_dvc_project_root)" && pwd -P)" 2>/dev/null || return 0
+  _DVC_UP_ARGS+=("--mount" "type=bind,source=${project_root},target=${project_root}")
+}
+
+_dvc_project_key() {
+  _dvc_project_root | sed 's|/|-|g' | sed 's/^-//'
+}
+
+_dvc_directory_config_paths() {
+  local project_root home directory
+  local -a discovered=()
+
+  project_root="$(cd "$(_dvc_project_root)" && pwd -P)" || return 1
+  home="$(cd "$HOME" && pwd -P)" || return 1
+  directory="$(dirname "$project_root")"
+
+  # Directory overlays are deliberately outside the repository being operated
+  # on. This keeps a project's source-controlled files out of dvc's personal
+  # configuration system while allowing a parent source directory to provide
+  # a shared profile.
+  case "$directory" in
+    "$home"|"$home"/*) ;;
+    *) return 0 ;;
+  esac
+
+  while :; do
+    if [[ -f "$directory/.dvc/config.json" ]]; then
+      discovered+=("$directory/.dvc/config.json")
+    fi
+
+    [[ "$directory" == "$home" ]] && break
+    directory="$(dirname "$directory")"
+  done
+
+  # Apply broad parent directories first, then let the nearest directory win.
+  local index
+  for ((index = ${#discovered[@]} - 1; index >= 0; index--)); do
+    printf '%s\n' "${discovered[index]}"
+  done
+}
+
+_dvc_project_config_path() {
+  if [[ -n "${DVC_PROJECT_CONFIG_PATH:-}" ]]; then
+    printf '%s' "$DVC_PROJECT_CONFIG_PATH"
+    return 0
+  fi
+
+  local config_dir
+  if [[ -n "${DVC_CONFIG_PATH:-}" ]]; then
+    config_dir="$(dirname "$DVC_CONFIG_PATH")"
+  else
+    config_dir="${HOME}/.config/dvc"
+  fi
+
+  printf '%s/projects/%s.json' "$config_dir" "$(_dvc_project_key)"
+}
+
+_dvc_merge_configs() {
+  local user_config="$1"
+  shift
+
+  python3 - "$user_config" "$@" <<'PY'
+import copy
+import json
+import sys
+
+user_path, *overlay_paths = sys.argv[1:]
+
+with open(user_path, encoding="utf-8") as user_file:
+    merged = json.load(user_file)
+
+def merge(base, override):
+    result = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(result.get(key), dict) and isinstance(value, dict):
+            result[key] = merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+for overlay_path in overlay_paths:
+    if overlay_path:
+        with open(overlay_path, encoding="utf-8") as overlay_file:
+            merged = merge(merged, json.load(overlay_file))
+
+print(json.dumps(merged))
+PY
+}
+
+_dvc_load_config() {
+  local config_file project_config_file directory_config
+  local -a directory_config_files=()
+  config_file="$(_dvc_find_user_config_file)" || return 0
+
+  _DVC_CONFIG_FILE="$config_file"
+  while IFS= read -r directory_config; do
+    [[ -n "$directory_config" ]] && directory_config_files+=("$directory_config")
+  done < <(_dvc_directory_config_paths)
+
+  project_config_file="$(_dvc_project_config_path)"
+  if [[ -f "$project_config_file" ]]; then
+    _DVC_PROJECT_CONFIG_FILE="$project_config_file"
+  fi
+
+  _DVC_CONFIG_JSON="$(_dvc_merge_configs "$_DVC_CONFIG_FILE" "${directory_config_files[@]}" "$_DVC_PROJECT_CONFIG_FILE")" \
+    || _dvc_error "could not parse dvc configuration"
+}
+
+_dvc_config_get() {
+  local key="$1"
+  printf '%s' "$_DVC_CONFIG_JSON" | python3 -c "
+import json, sys
+config = json.load(sys.stdin)
+keys = '$key'.split('.')
+val = config
+for k in keys:
+  val = val.get(k, {})
+  if val is None or val == {}:
+    break
+if val is not None and val != {}:
+  if isinstance(val, dict):
+    print(json.dumps(val))
+  elif isinstance(val, list):
+    print(json.dumps(val))
+  else:
+    print(val)
+" 2>/dev/null || printf '{}'
+}
+
+_dvc_dotfiles_get() {
+  local key="$1"
+  printf '%s' "$_DVC_CONFIG_JSON" | python3 -c "
+import json, sys
+print(json.load(sys.stdin).get('dotfiles', {}).get('$key', ''))
+" 2>/dev/null
+}
+
+_dvc_get_profile() {
+  local profile_name="$1"
+  python3 - "$profile_name" "$_DVC_CONFIG_JSON" <<'PY' 2>/dev/null || printf '{}'
+import copy
+import json
+import sys
+
+config = json.loads(sys.argv[2])
+profiles = config.get("profiles", {})
+requested = sys.argv[1]
+
+def merge(base, override):
+    result = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(result.get(key), dict) and isinstance(value, dict):
+            result[key] = merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+def resolve(name, stack):
+    if name in stack:
+        raise ValueError("profile inheritance cycle: " + " -> ".join([*stack, name]))
+
+    profile = profiles.get(name)
+    if not isinstance(profile, dict):
+        return None
+
+    profile = copy.deepcopy(profile)
+    parent = profile.pop("extends", None)
+    if parent is None:
+        return profile
+    if not isinstance(parent, str):
+        raise ValueError(f"profile {name!r} has a non-string extends value")
+
+    parent_profile = resolve(parent, [*stack, name])
+    if parent_profile is None:
+        raise ValueError(f"profile {name!r} extends missing profile {parent!r}")
+    return merge(parent_profile, profile)
+
+resolved = resolve(requested, [])
+print(json.dumps(resolved if resolved is not None else {}))
+PY
+}
+
+_dvc_get_default_profile() {
+  local default
+  default="$(printf '%s' "$_DVC_CONFIG_JSON" | python3 -c "
+import json, sys
+config = json.load(sys.stdin)
+print(config.get('defaultProfile', ''))
+" 2>/dev/null)" || default=""
+  printf '%s' "$default"
+}
+
+_dvc_has_ssh_agent() {
+  [[ -S "${SSH_AUTH_SOCK:-}" ]]
+}
+
+# On macOS, Docker/OrbStack run containers inside a Linux VM. Bind-mounting
+# the host's literal $SSH_AUTH_SOCK path (a macOS launchd socket under
+# /var/run/com.apple.launchd.*, never shared into that VM) silently produces
+# an empty directory at the container target instead of a live socket —
+# every SSH operation then fails as if no agent were forwarded at all, with
+# no error at `up` time. Docker Desktop and OrbStack both auto-forward the
+# real host agent to a well-known in-VM path instead; bind-mount that.
+_dvc_ssh_agent_mount_source() {
+  case "$(uname)" in
+    Darwin) printf '%s\n' "/run/host-services/ssh-auth.sock" ;;
+    *) printf '%s\n' "$SSH_AUTH_SOCK" ;;
+  esac
+}
+
+
+_dvc_prepare_ssh_config() {
+  local src="${HOME}/.ssh/config"
+  [[ -f "$src" ]] || return 1
+
+  local cache_dir out
+  cache_dir="$(_dvc_cache_dir)"
+  out="${cache_dir}/ssh_config"
+  mkdir -p "$cache_dir"
+
+  awk -v home="$HOME" '
+    function unquote(value) {
+      if ((substr(value, 1, 1) == "\"" && substr(value, length(value), 1) == "\"") ||
+          (substr(value, 1, 1) == "'\''" && substr(value, length(value), 1) == "'\''")) {
+        return substr(value, 2, length(value) - 2)
+      }
+      return value
+    }
+
+    function mounted_public_key(path, name, prefix) {
+      path = unquote(path)
+
+      if (path ~ /^~\/\.ssh\/[^\/]+$/) {
+        name = path
+        sub(/^~\/\.ssh\//, "", name)
+      } else if (path ~ /^\$HOME\/\.ssh\/[^\/]+$/) {
+        name = path
+        sub(/^\$HOME\/\.ssh\//, "", name)
+      } else if (path ~ /^\$\{HOME\}\/\.ssh\/[^\/]+$/) {
+        name = path
+        sub(/^\$\{HOME\}\/\.ssh\//, "", name)
+      } else {
+        prefix = home "/.ssh/"
+        if (substr(path, 1, length(prefix)) == prefix && index(substr(path, length(prefix) + 1), "/") == 0) {
+          name = substr(path, length(prefix) + 1)
+        } else {
+          return path
+        }
+      }
+
+      # IdentityFile conventionally names the private key (no .pub suffix);
+      # only the public key is ever mounted into the container, so normalize
+      # to the .pub counterpart regardless of which form was configured.
+      if (name !~ /\.pub$/) {
+        name = name ".pub"
+      }
+
+      return "/mnt/ssh/keys/" name
+    }
+
+    /^[[:space:]]*IdentityFile[[:space:]]+/ {
+      indent = $0
+      sub(/IdentityFile.*/, "", indent)
+      path = $0
+      sub(/^[[:space:]]*IdentityFile[[:space:]]+/, "", path)
+      print indent "IdentityFile " mounted_public_key(path)
+      next
+    }
+
+    { print }
+  ' "$src" > "$out"
+  chmod 600 "$out"
+  printf '%s\n' "$out"
+}
+
+_dvc_gitconfig_path_mappings() {
+  local profile_json="$1"
+
+  printf '%s' "$profile_json" | python3 -c '
+import json
+import os
+import sys
+
+profile = json.load(sys.stdin)
+home = os.path.abspath(sys.argv[1])
+paths = []
+
+def expand(path):
+    return os.path.abspath(os.path.expanduser(path))
+
+for config in profile.get("gitconfigs", []):
+    source = expand(config.get("source", ""))
+    target = config.get("target", "")
+    if source and target and os.path.isfile(source):
+        paths.append({"source": source, "target": target})
+
+ssh = profile.get("ssh", {})
+for source in ssh.get("publicKeys", []):
+    source = expand(source)
+    if os.path.isfile(source):
+        paths.append({"source": source, "target": f"/mnt/ssh/keys/{os.path.basename(source)}"})
+
+allowed_signers = ssh.get("allowedSigners", "")
+if allowed_signers:
+    source = expand(allowed_signers)
+    if os.path.isfile(source):
+        paths.append({"source": source, "target": "/mnt/ssh/allowed_signers"})
+
+print(json.dumps(paths))
+' "$HOME"
+}
+
+_dvc_validate_git_profile_paths() {
+  local profile_json="$1"
+
+  printf '%s' "$profile_json" | python3 -c '
+import json
+import os
+import sys
+
+profile = json.load(sys.stdin)
+errors = []
+
+for config in profile.get("gitconfigs", []):
+    source = os.path.expanduser(config.get("source", ""))
+    target = config.get("target", "")
+    if not source or not target:
+        errors.append("each gitconfigs entry requires source and target")
+    elif not os.path.isfile(source):
+        errors.append(f"gitconfigs source does not exist: {source}")
+
+for source in profile.get("ssh", {}).get("publicKeys", []):
+    source = os.path.expanduser(source)
+    if not os.path.isfile(source):
+        errors.append(f"ssh.publicKeys entry does not exist: {source}")
+
+if errors:
+    for error in errors:
+        print(f"dvc: {error}", file=sys.stderr)
+    sys.exit(1)
+'
+}
+
+_dvc_active_gitconfig_sources() {
+  if ! git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf '[]'
+    return 0
+  fi
+
+  git -C "$PWD" config --includes --show-origin --list 2>/dev/null | python3 -c '
+import json
+import os
+import sys
+
+sources = set()
+for line in sys.stdin:
+    origin, separator, _ = line.partition("\t")
+    if separator and origin.startswith("file:"):
+        sources.add(os.path.realpath(origin.removeprefix("file:")))
+
+print(json.dumps(sorted(sources)))
+'
+}
+
+_dvc_rewrite_gitconfig() {
+  local src="$1"
+  local out="$2"
+  local mappings_json="$3"
+  local active_sources_json="$4"
+
+  python3 - "$src" "$out" "$HOME" "$mappings_json" "$active_sources_json" <<'PY'
+import json
+import os
+import re
+import sys
+
+source, output, home, mappings_json, active_sources_json = sys.argv[1:]
+home = os.path.realpath(home)
+mappings = json.loads(mappings_json)
+active_sources = {os.path.realpath(path) for path in json.loads(active_sources_json)}
+
+path_map = {}
+target_map = {}
+for mapping in mappings:
+    original = os.path.realpath(mapping["source"])
+    target = mapping["target"]
+    path_map[original] = target
+    if target.startswith("/"):
+        target_map[os.path.realpath(target)] = original
+    if original.startswith(home + os.sep):
+        relative = original[len(home) + 1:]
+        path_map[f"~/{relative}"] = target
+        path_map[f"$HOME/{relative}"] = target
+        path_map[f"${{HOME}}/{relative}"] = target
+
+def normalize(value):
+    value = value.strip().strip('"').strip("'")
+    if value == "~":
+        return home
+    if value.startswith("~/"):
+        return os.path.realpath(os.path.join(home, value[2:]))
+    if value.startswith("$HOME/"):
+        return os.path.realpath(os.path.join(home, value[6:]))
+    if value.startswith("${HOME}/"):
+        return os.path.realpath(os.path.join(home, value[8:]))
+    return os.path.realpath(value)
+
+text = open(source, encoding="utf-8").read()
+for old, new in sorted(path_map.items(), key=lambda item: len(item[0]), reverse=True):
+    text = text.replace(old, new)
+
+lines = text.splitlines(keepends=True)
+sections = []
+current = []
+for line in lines:
+    if re.match(r"^\s*\[", line) and current:
+        sections.append(current)
+        current = []
+    current.append(line)
+if current:
+    sections.append(current)
+
+for section in sections:
+    header = section[0]
+    match = re.match(r'^\s*\[includeIf\s+"gitdir:[^"]+"\]\s*(?:[#;].*)?$', header, re.IGNORECASE)
+    if not match:
+        continue
+
+    paths = []
+    for line in section[1:]:
+        path_match = re.match(r"^\s*path\s*=\s*(.*?)\s*(?:[#;].*)?$", line, re.IGNORECASE)
+        if path_match:
+            paths.append(normalize(path_match.group(1)))
+
+    if any(target_map.get(path, path) in active_sources and target_map.get(path, path) in path_map for path in paths):
+        section[0] = re.sub(r"includeIf\s+\"gitdir:[^\"]+\"", "include", header, flags=re.IGNORECASE)
+
+with open(output, "w", encoding="utf-8") as handle:
+    handle.write("".join(line for section in sections for line in section))
+os.chmod(output, 0o600)
+PY
+}
+
+_dvc_gitconfig_global_target() {
+  local profile_json="$1"
+
+  printf '%s' "$profile_json" | python3 -c '
+import json
+import os
+import sys
+
+for config in json.load(sys.stdin).get("gitconfigs", []):
+    source = os.path.expanduser(config.get("source", ""))
+    target = config.get("target", "")
+    if config.get("setGlobal", False) and target and os.path.isfile(source):
+        print(target)
+        break
+'
+}
+
+_dvc_git_ssh_command() {
+  [[ -f "${HOME}/.ssh/config" ]] || return 1
+
+  local cmd="ssh -F /mnt/ssh/config"
+  if [[ -f "${HOME}/.ssh/known_hosts" ]]; then
+    cmd="${cmd} -o UserKnownHostsFile=/mnt/ssh/known_hosts"
+  fi
+
+  printf '%s\n' "$cmd"
+}
+
+_dvc_expand_path() {
+  local path="$1"
+  printf '%s' "${path/#\~/${HOME}}"
+}
+
+_dvc_lifecycle_project_name() {
+  local primary_container
+  primary_container="$(_dvc_existing_container_id true)" || primary_container=""
+  [[ -n "$primary_container" ]] || return 1
+
+  docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$primary_container" 2>/dev/null
+}
+
+_dvc_lifecycle_container_ids() {
+  local primary_container project_name
+  primary_container="$(_dvc_existing_container_id true)" || primary_container=""
+  [[ -n "$primary_container" ]] || return 0
+  project_name="$(_dvc_lifecycle_project_name)" || project_name=""
+
+  if [[ -n "$project_name" && "$project_name" != "<no value>" ]]; then
+    docker ps -aq --filter "label=com.docker.compose.project=${project_name}"
+  else
+    printf '%s\n' "$primary_container"
+  fi
+}
+
+_dvc_lifecycle_require_workspace() {
+  _dvc_has_workspace || _dvc_error "run this command from the primary devcontainer workspace"
+}
+
+_dvc_lifecycle_status() {
+  _dvc_lifecycle_require_workspace
+
+  local primary_container project_name
+  primary_container="$(_dvc_existing_container_id true)" || primary_container=""
+  project_name="$(_dvc_lifecycle_project_name)" || project_name=""
+  if [[ -n "$project_name" && "$project_name" != "<no value>" ]]; then
+    docker ps -a \
+      --filter "label=com.docker.compose.project=${project_name}" \
+      --format 'table {{.Names}}\t{{.Status}}\t{{.Label "com.docker.compose.service"}}'
+  else
+    docker ps -a \
+      --filter "id=${primary_container}" \
+      --format 'table {{.Names}}\t{{.Status}}'
+  fi
+}
+
+_dvc_lifecycle_start() {
+  _dvc_lifecycle_require_workspace
+
+  local container_ids=()
+  mapfile -t container_ids < <(_dvc_lifecycle_container_ids)
+  ((${#container_ids[@]} > 0)) || _dvc_error "no existing devcontainer found; run 'dvc up'"
+  docker start "${container_ids[@]}"
+}
+
+_dvc_lifecycle_stop() {
+  _dvc_lifecycle_require_workspace
+
+  local container_ids=()
+  mapfile -t container_ids < <(_dvc_lifecycle_container_ids)
+  ((${#container_ids[@]} > 0)) || _dvc_error "no existing devcontainer found"
+  docker stop "${container_ids[@]}"
+}
+
+_dvc_lifecycle_down() {
+  _dvc_lifecycle_require_workspace
+
+  local remove_volumes="$1"
+  local project_name container_ids=() network_ids=() volume_ids=()
+  project_name="$(_dvc_lifecycle_project_name)" || project_name=""
+  mapfile -t container_ids < <(_dvc_lifecycle_container_ids)
+
+  if ((${#container_ids[@]} == 0)); then
+    _dvc_warn "no existing devcontainer found"
+    return 0
+  fi
+
+  docker stop "${container_ids[@]}" >/dev/null 2>&1 || true
+  docker rm "${container_ids[@]}"
+
+  if [[ -n "$project_name" && "$project_name" != "<no value>" ]]; then
+    mapfile -t network_ids < <(docker network ls -q --filter "label=com.docker.compose.project=${project_name}")
+    if ((${#network_ids[@]} > 0)); then
+      docker network rm "${network_ids[@]}" >/dev/null || _dvc_warn "could not remove every devcontainer network"
+    fi
+
+    if [[ "$remove_volumes" == "true" ]]; then
+      mapfile -t volume_ids < <(docker volume ls -q --filter "label=com.docker.compose.project=${project_name}")
+      if ((${#volume_ids[@]} > 0)); then
+        docker volume rm "${volume_ids[@]}"
+      fi
+    fi
+  fi
+}
+
+_dvc_lifecycle() {
+  local command="$1"
+  shift
+
+  case "$command" in
+    status)
+      ((${#@} == 0)) || _dvc_error "dvc status does not accept arguments"
+      _dvc_lifecycle_status
+      ;;
+    start)
+      ((${#@} == 0)) || _dvc_error "dvc start does not accept arguments"
+      _dvc_lifecycle_start
+      ;;
+    stop)
+      ((${#@} == 0)) || _dvc_error "dvc stop does not accept arguments"
+      _dvc_lifecycle_stop
+      ;;
+    down | rm | remove)
+      local remove_volumes=false
+      while (($#)); do
+        case "$1" in
+          -v | --volumes) remove_volumes=true ;;
+          *) _dvc_error "dvc ${command} accepts only --volumes (-v)" ;;
+        esac
+        shift
+      done
+      _dvc_lifecycle_down "$remove_volumes"
+      ;;
+  esac
+}
+
+_dvc_add_mount() {
+  local source="$1"
+  local target="$2"
+
+  source="$(_dvc_expand_path "$source")"
+  _DVC_UP_ARGS+=("--mount" "type=bind,source=${source},target=${target}")
+}
+
+_dvc_add_env() {
+  local key="$1"
+  local value="$2"
+  _DVC_UP_ARGS+=("--remote-env" "${key}=${value}")
+  _DVC_EXEC_ENV_ARGS+=("--remote-env" "${key}=${value}")
+}
+
+_dvc_add_feature() {
+  local feature="$1"
+  _DVC_UP_ARGS+=("--additional-features" "$feature")
+}
+
+_dvc_copy_file_for_mount() {
+  local source="$1"
+  local label="$2"
+  local cache_dir destination
+
+  cache_dir="$(_dvc_cache_dir)/mounts/$(_dvc_workspace_key)"
+  destination="${cache_dir}/${label}-$(basename "$source")"
+  mkdir -p "$cache_dir"
+  cp -f "$source" "$destination"
+  chmod 600 "$destination"
+  printf '%s\n' "$destination"
+}
+
+_dvc_add_dotfiles_args() {
+  local repository install_command target_path
+  repository="$(_dvc_dotfiles_get repository)"
+  install_command="$(_dvc_dotfiles_get installCommand)"
+  target_path="$(_dvc_dotfiles_get targetPath)"
+
+  [[ -z "$repository" ]] && return 0
+
+  _DVC_UP_ARGS+=("--dotfiles-repository" "$repository")
+  [[ -n "$install_command" ]] && _DVC_UP_ARGS+=("--dotfiles-install-command" "$install_command")
+  [[ -n "$target_path" ]] && _DVC_UP_ARGS+=("--dotfiles-target-path" "$target_path")
+}
+
+_dvc_nvim_settings() {
+  local profile_json="$1"
+
+  printf '%s' "$profile_json" | python3 -c '
+import json
+import sys
+
+profile = json.load(sys.stdin)
+nvim = profile.get("tools", {}).get("nvim", {})
+if not isinstance(nvim, dict):
+    nvim = {}
+
+mode = nvim.get("mode", "container")
+config = nvim.get("configPath", "~/.config/nvim")
+data = nvim.get("dataPath", "~/.local/share/nvim")
+print(f"{mode}\t{config}\t{data}")
+' 2>/dev/null
+}
+
+_dvc_agent_tool_settings() {
+  local profile_json="$1"
+
+  printf '%s' "$profile_json" | python3 -c '
+import json
+import sys
+
+profile = json.load(sys.stdin)
+tools = profile.get("tools", {})
+defaults = {
+    "codex": {"configPath": "~/.codex"},
+    "claude": {"configPath": "~/.claude"},
+    "copilot": {"configPath": "~/.copilot"},
+    "gh": {"configPath": "~/.config/gh"},
+    "omp": {"configPath": "~/.omp"},
+}
+
+for name, defaults_for_tool in defaults.items():
+    tool = tools.get(name, {})
+    if isinstance(tool, bool):
+        tool = {"install": tool}
+    if not isinstance(tool, dict):
+        tool = {}
+
+    install = bool(tool.get("install", False))
+    mode = tool.get("mode", "container")
+    config_path = tool.get("configPath", defaults_for_tool["configPath"])
+    print(f"{name}\t{str(install).lower()}\t{mode}\t{config_path}")
+' 2>/dev/null
+}
+
+_dvc_profile_features_json() {
+  local profile_json="$1"
+
+  printf '%s' "$profile_json" | python3 -c '
+import copy
+import json
+import sys
+
+profile = json.load(sys.stdin)
+features = copy.deepcopy(profile.get("features", {}))
+gh = profile.get("tools", {}).get("gh", {})
+if isinstance(gh, bool):
+    gh = {"install": gh}
+if isinstance(gh, dict) and gh.get("install", False):
+    features.setdefault("ghcr.io/devcontainers/features/github-cli:1", {})
+print(json.dumps(features))
+' 2>/dev/null || printf '{}'
+}
+
+_dvc_add_agent_tools_up_args() {
+  local profile_json="$1"
+
+  while IFS=$'\t' read -r tool install mode config_path; do
+    [[ "$install" == "true" ]] || continue
+
+    case "$mode" in
+      container)
+        ;;
+      mount)
+        config_path="$(_dvc_expand_path "$config_path")"
+        [[ -d "$config_path" ]] || _dvc_error "${tool} mount mode requires configPath directory '$config_path'"
+
+        case "$tool" in
+          codex)
+            _DVC_UP_ARGS+=(
+              "--mount" "type=bind,source=${config_path},target=/mnt/dvc/codex"
+              "--remote-env" "CODEX_HOME=/mnt/dvc/codex"
+            )
+            ;;
+          claude)
+            _DVC_UP_ARGS+=(
+              "--mount" "type=bind,source=${config_path},target=/mnt/dvc/claude"
+              "--remote-env" "CLAUDE_CONFIG_DIR=/mnt/dvc/claude"
+            )
+            ;;
+          copilot)
+            _DVC_UP_ARGS+=(
+              "--mount" "type=bind,source=${config_path},target=/mnt/dvc/copilot"
+              "--remote-env" "COPILOT_HOME=/mnt/dvc/copilot"
+            )
+            ;;
+          gh)
+            _DVC_UP_ARGS+=(
+              "--mount" "type=bind,source=${config_path},target=/mnt/dvc/gh"
+              "--remote-env" "GH_CONFIG_DIR=/mnt/dvc/gh"
+            )
+            ;;
+          omp)
+            local omp_target
+            omp_target="$(_dvc_omp_mount_target)"
+            if [[ "$omp_target" == "/mnt/dvc/omp" ]]; then
+              _dvc_warn "omp mount mode: could not determine the devcontainer's remote user (set \"remoteUser\" in devcontainer.json for a direct ~/.omp mount); falling back to /mnt/dvc/omp plus a bootstrap-managed symlink"
+            fi
+            # omp's real PI_CONFIG_DIR env var (if set) is joined onto
+            # homedir() as a *relative* fragment, not used as an absolute
+            # override — setting it to an absolute path here doubles the
+            # prefix and breaks every config lookup. DVC_OMP_*_MOUNT_TARGET
+            # are our own bookkeeping vars, read only by install.sh's
+            # fallback symlinks; the real XDG env vars are never set —
+            # every target below is the path omp already defaults to.
+            _DVC_UP_ARGS+=(
+              "--mount" "type=bind,source=${config_path},target=${omp_target}"
+              "--remote-env" "DVC_OMP_MOUNT_TARGET=${omp_target}"
+            )
+
+            # omp also keeps state outside ~/.omp: XDG data (marketplace
+            # registry), XDG state (daemon runtime dirs, a secret-placeholder
+            # key), and XDG cache — each under a fixed "omp" subdir.
+            local xdg_name xdg_subpath xdg_env host_dir xdg_target
+            for xdg_name in share state cache; do
+              case "$xdg_name" in
+                share) xdg_subpath=".local/share/omp"; xdg_env="DVC_OMP_SHARE_MOUNT_TARGET" ;;
+                state) xdg_subpath=".local/state/omp"; xdg_env="DVC_OMP_STATE_MOUNT_TARGET" ;;
+                cache) xdg_subpath=".cache/omp"; xdg_env="DVC_OMP_CACHE_MOUNT_TARGET" ;;
+              esac
+              host_dir="$(_dvc_expand_path "~/${xdg_subpath}")"
+              mkdir -p "$host_dir"
+              xdg_target="$(_dvc_omp_${xdg_name}_mount_target)"
+              _DVC_UP_ARGS+=(
+                "--mount" "type=bind,source=${host_dir},target=${xdg_target}"
+                "--remote-env" "${xdg_env}=${xdg_target}"
+              )
+            done
+            ;;
+        esac
+        ;;
+      *)
+        _dvc_error "${tool} mode must be 'container' or 'mount', got '$mode'"
+        ;;
+    esac
+
+    case "$tool" in
+      codex)
+        _DVC_UP_ARGS+=(
+          "--remote-env" "DVC_TOOL_CODEX_ENABLED=1"
+          "--remote-env" "DVC_TOOL_CODEX_MODE=${mode}"
+        )
+        ;;
+      claude)
+        _DVC_UP_ARGS+=(
+          "--remote-env" "DVC_TOOL_CLAUDE_ENABLED=1"
+          "--remote-env" "DVC_TOOL_CLAUDE_MODE=${mode}"
+        )
+        ;;
+      copilot)
+        _DVC_UP_ARGS+=(
+          "--remote-env" "DVC_TOOL_COPILOT_ENABLED=1"
+          "--remote-env" "DVC_TOOL_COPILOT_MODE=${mode}"
+        )
+        ;;
+      gh)
+        _DVC_UP_ARGS+=(
+          "--remote-env" "DVC_TOOL_GH_ENABLED=1"
+          "--remote-env" "DVC_TOOL_GH_MODE=${mode}"
+        )
+        ;;
+      omp)
+        _DVC_UP_ARGS+=(
+          "--remote-env" "DVC_TOOL_OMP_ENABLED=1"
+          "--remote-env" "DVC_TOOL_OMP_MODE=${mode}"
+        )
+        ;;
+    esac
+  done < <(_dvc_agent_tool_settings "$profile_json")
+}
+
+_dvc_add_agent_tools_exec_env_args() {
+  local profile_json="$1"
+
+  while IFS=$'\t' read -r tool install mode config_path; do
+    [[ "$install" == "true" ]] || continue
+
+    case "$mode" in
+      container | mount)
+        ;;
+      *)
+        _dvc_error "${tool} mode must be 'container' or 'mount', got '$mode'"
+        ;;
+    esac
+
+    case "$tool" in
+      codex)
+        _DVC_EXEC_ENV_ARGS+=(
+          "--remote-env" "DVC_TOOL_CODEX_ENABLED=1"
+          "--remote-env" "DVC_TOOL_CODEX_MODE=${mode}"
+        )
+        if [[ "$mode" == "mount" ]]; then
+          _DVC_EXEC_ENV_ARGS+=("--remote-env" "CODEX_HOME=/mnt/dvc/codex")
+        fi
+        ;;
+      claude)
+        _DVC_EXEC_ENV_ARGS+=(
+          "--remote-env" "DVC_TOOL_CLAUDE_ENABLED=1"
+          "--remote-env" "DVC_TOOL_CLAUDE_MODE=${mode}"
+        )
+        if [[ "$mode" == "mount" ]]; then
+          _DVC_EXEC_ENV_ARGS+=("--remote-env" "CLAUDE_CONFIG_DIR=/mnt/dvc/claude")
+        fi
+        ;;
+      copilot)
+        _DVC_EXEC_ENV_ARGS+=(
+          "--remote-env" "DVC_TOOL_COPILOT_ENABLED=1"
+          "--remote-env" "DVC_TOOL_COPILOT_MODE=${mode}"
+        )
+        if [[ "$mode" == "mount" ]]; then
+          _DVC_EXEC_ENV_ARGS+=("--remote-env" "COPILOT_HOME=/mnt/dvc/copilot")
+        fi
+        ;;
+      gh)
+        _DVC_EXEC_ENV_ARGS+=(
+          "--remote-env" "DVC_TOOL_GH_ENABLED=1"
+          "--remote-env" "DVC_TOOL_GH_MODE=${mode}"
+        )
+        if [[ "$mode" == "mount" ]]; then
+          _DVC_EXEC_ENV_ARGS+=("--remote-env" "GH_CONFIG_DIR=/mnt/dvc/gh")
+        fi
+        ;;
+      omp)
+        _DVC_EXEC_ENV_ARGS+=(
+          "--remote-env" "DVC_TOOL_OMP_ENABLED=1"
+          "--remote-env" "DVC_TOOL_OMP_MODE=${mode}"
+        )
+        if [[ "$mode" == "mount" ]]; then
+          _DVC_EXEC_ENV_ARGS+=(
+            "--remote-env" "DVC_OMP_MOUNT_TARGET=$(_dvc_omp_mount_target)"
+            "--remote-env" "DVC_OMP_SHARE_MOUNT_TARGET=$(_dvc_omp_share_mount_target)"
+            "--remote-env" "DVC_OMP_STATE_MOUNT_TARGET=$(_dvc_omp_state_mount_target)"
+            "--remote-env" "DVC_OMP_CACHE_MOUNT_TARGET=$(_dvc_omp_cache_mount_target)"
+          )
+        fi
+        ;;
+    esac
+  done < <(_dvc_agent_tool_settings "$profile_json")
+}
+
+_dvc_add_nvim_up_args() {
+  local profile_json="$1"
+  local mode config_path data_path
+
+  IFS=$'\t' read -r mode config_path data_path <<< "$(_dvc_nvim_settings "$profile_json")"
+
+  case "$mode" in
+    container)
+      _DVC_UP_ARGS+=("--remote-env" "DVC_NVIM_MODE=container")
+      ;;
+    mount)
+      config_path="$(_dvc_expand_path "$config_path")"
+      data_path="$(_dvc_expand_path "$data_path")"
+
+      [[ -d "$config_path" ]] || _dvc_error "nvim mount profile requires configPath directory '$config_path'"
+      [[ -d "$data_path" ]] || _dvc_error "nvim mount profile requires dataPath directory '$data_path'"
+
+      _DVC_UP_ARGS+=(
+        "--mount" "type=bind,source=${config_path},target=/mnt/dvc/nvim/config/nvim"
+        "--mount" "type=bind,source=${data_path},target=/mnt/dvc/nvim/data/nvim"
+        "--remote-env" "DVC_NVIM_MODE=mount"
+        "--remote-env" "DVC_NVIM_CONFIG_HOME=/mnt/dvc/nvim/config"
+        "--remote-env" "DVC_NVIM_DATA_HOME=/mnt/dvc/nvim/data"
+      )
+      ;;
+    *)
+      _dvc_error "nvim mode must be 'container' or 'mount', got '$mode'"
+      ;;
+  esac
+}
+
+_dvc_add_nvim_exec_env_args() {
+  local profile_json="$1"
+  local mode config_path data_path
+
+  IFS=$'\t' read -r mode config_path data_path <<< "$(_dvc_nvim_settings "$profile_json")"
+
+  case "$mode" in
+    container)
+      _DVC_EXEC_ENV_ARGS+=("--remote-env" "DVC_NVIM_MODE=container")
+      ;;
+    mount)
+      _DVC_EXEC_ENV_ARGS+=(
+        "--remote-env" "DVC_NVIM_MODE=mount"
+        "--remote-env" "DVC_NVIM_CONFIG_HOME=/mnt/dvc/nvim/config"
+        "--remote-env" "DVC_NVIM_DATA_HOME=/mnt/dvc/nvim/data"
+      )
+      ;;
+    *)
+      _dvc_error "nvim mode must be 'container' or 'mount', got '$mode'"
+      ;;
+  esac
+}
+
+_dvc_build_up_args_from_profile() {
+  local profile_json="$1"
+
+  [[ "$profile_json" == "{}" ]] && return 0
+
+  _dvc_add_project_root_mirror_mount
+  _dvc_validate_git_profile_paths "$profile_json"
+
+  local gitconfig_mappings gitconfig_active_sources
+  gitconfig_mappings="$(_dvc_gitconfig_path_mappings "$profile_json")" || gitconfig_mappings="[]"
+  gitconfig_active_sources="$(_dvc_active_gitconfig_sources)" || gitconfig_active_sources="[]"
+
+  local has_ssh_agent ssh_config
+  has_ssh_agent="$(printf '%s' "$profile_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('sshAgent', False))" 2>/dev/null)" || has_ssh_agent="false"
+
+  if [[ "$has_ssh_agent" == "True" ]] || [[ "$has_ssh_agent" == "true" ]]; then
+    if _dvc_has_ssh_agent; then
+      _DVC_UP_ARGS+=(
+        "--mount" "type=bind,source=$(_dvc_ssh_agent_mount_source),target=/ssh-agent"
+        "--remote-env" "SSH_AUTH_SOCK=/ssh-agent"
+      )
+    else
+      _dvc_warn "sshAgent=true but SSH_AUTH_SOCK is not set or not a socket"
+    fi
+  fi
+
+  local ssh_config_json
+  ssh_config_json="$(printf '%s' "$profile_json" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('ssh', {})))" 2>/dev/null)" || ssh_config_json="{}"
+
+  if [[ "$ssh_config_json" != "{}" ]]; then
+    local ssh_config_path
+    ssh_config_path="$(printf '%s' "$ssh_config_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('config', ''))" 2>/dev/null)" || ssh_config_path=""
+
+    if [[ -n "$ssh_config_path" ]]; then
+      local expanded
+      expanded="$(_dvc_expand_path "$ssh_config_path")"
+      if [[ -f "$expanded" ]]; then
+        local prepared_config
+        prepared_config="$(_dvc_prepare_ssh_config)"
+        _DVC_UP_ARGS+=(
+          "--mount" "type=bind,source=${prepared_config},target=/mnt/ssh/config"
+        )
+      fi
+    fi
+
+    local known_hosts
+    known_hosts="$(printf '%s' "$ssh_config_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('knownHosts', ''))" 2>/dev/null)" || known_hosts=""
+    if [[ -n "$known_hosts" ]]; then
+      local expanded="$(_dvc_expand_path "$known_hosts")"
+      if [[ -f "$expanded" ]]; then
+        local prepared_known_hosts
+        prepared_known_hosts="$(_dvc_copy_file_for_mount "$expanded" ssh-known-hosts)"
+        _DVC_UP_ARGS+=(
+          "--mount" "type=bind,source=${prepared_known_hosts},target=/mnt/ssh/known_hosts"
+        )
+      fi
+    fi
+
+    local allowed_signers
+    allowed_signers="$(printf '%s' "$ssh_config_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('allowedSigners', ''))" 2>/dev/null)" || allowed_signers=""
+    if [[ -n "$allowed_signers" ]]; then
+      local expanded="$(_dvc_expand_path "$allowed_signers")"
+      if [[ -f "$expanded" ]]; then
+        local prepared_allowed_signers
+        prepared_allowed_signers="$(_dvc_copy_file_for_mount "$expanded" ssh-allowed-signers)"
+        _DVC_UP_ARGS+=(
+          "--mount" "type=bind,source=${prepared_allowed_signers},target=/mnt/ssh/allowed_signers"
+        )
+      fi
+    fi
+
+    local public_keys
+    public_keys="$(printf '%s' "$ssh_config_json" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('publicKeys', [])))" 2>/dev/null)" || public_keys="[]"
+
+    if [[ "$public_keys" != "[]" ]]; then
+      while IFS=$'\t' read -r source target; do
+        local prepared_public_key
+        prepared_public_key="$(_dvc_copy_file_for_mount "$source" ssh-public-key)"
+        _DVC_UP_ARGS+=("--mount" "type=bind,source=${prepared_public_key},target=${target}")
+      done < <(printf '%s' "$public_keys" | python3 -c "
+import json, sys, os
+keys = json.load(sys.stdin)
+for key in keys:
+  key = os.path.expanduser(key)
+  if os.path.isfile(key):
+    name = os.path.basename(key)
+    print(f'{key}\t/mnt/ssh/keys/{name}')
+")
+    fi
+  fi
+
+  local gitconfigs_json
+  gitconfigs_json="$(printf '%s' "$profile_json" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('gitconfigs', [])))" 2>/dev/null)" || gitconfigs_json="[]"
+
+  if [[ "$gitconfigs_json" != "[]" ]]; then
+    local cache_dir
+    cache_dir="$(_dvc_cache_dir)"
+    mkdir -p "$cache_dir"
+
+    while IFS= read -r line; do
+      local source target setGlobal
+      source="$(printf '%s' "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['source'])")"
+      target="$(printf '%s' "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['target'])")"
+      setGlobal="$(printf '%s' "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['setGlobal'])")"
+
+      if [[ "$target" == "/mnt/gitconfigs/global" ]]; then
+        _dvc_rewrite_gitconfig "$source" "${cache_dir}/gitconfig" "$gitconfig_mappings" "$gitconfig_active_sources"
+        _DVC_UP_ARGS+=(
+          "--mount" "type=bind,source=${cache_dir}/gitconfig,target=${target}"
+        )
+        if [[ "$setGlobal" == "True" ]] || [[ "$setGlobal" == "true" ]]; then
+          _DVC_UP_ARGS+=("--remote-env" "GIT_CONFIG_GLOBAL=${target}")
+        fi
+      elif [[ "$target" == "/mnt/gitconfigs/local" ]]; then
+        _dvc_rewrite_gitconfig "$source" "${cache_dir}/gitconfig.local" "$gitconfig_mappings" "$gitconfig_active_sources"
+        _DVC_UP_ARGS+=(
+          "--mount" "type=bind,source=${cache_dir}/gitconfig.local,target=${target}"
+        )
+      elif [[ "$target" == "/mnt/gitconfigs/tm" ]]; then
+        _dvc_rewrite_gitconfig "$source" "${cache_dir}/tm.gitconfig" "$gitconfig_mappings" "$gitconfig_active_sources"
+        _DVC_UP_ARGS+=(
+          "--mount" "type=bind,source=${cache_dir}/tm.gitconfig,target=${target}"
+        )
+      else
+        local prepared_gitconfig
+        prepared_gitconfig="$(_dvc_copy_file_for_mount "$source" gitconfig)"
+        _DVC_UP_ARGS+=(
+          "--mount" "type=bind,source=${prepared_gitconfig},target=${target}"
+        )
+      fi
+    done < <(printf '%s' "$gitconfigs_json" | python3 -c "
+import json, sys, os
+configs = json.load(sys.stdin)
+for cfg in configs:
+  source = os.path.expanduser(cfg.get('source', ''))
+  target = cfg.get('target', '')
+  setGlobal = cfg.get('setGlobal', False)
+  if os.path.isfile(source) and target:
+    print(json.dumps({'source': source, 'target': target, 'setGlobal': setGlobal}))
+")
+  fi
+
+  local git_ssh_command
+  if git_ssh_command="$(_dvc_git_ssh_command)"; then
+    _DVC_UP_ARGS+=(
+      "--remote-env" "GIT_SSH_COMMAND=${git_ssh_command}"
+    )
+  fi
+
+  local features_json
+  features_json="$(_dvc_profile_features_json "$profile_json")"
+
+  if [[ "$features_json" != "{}" ]]; then
+    _DVC_UP_ARGS+=("--additional-features" "$features_json")
+  fi
+
+  local mounts_json
+  mounts_json="$(printf '%s' "$profile_json" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('mounts', [])))" 2>/dev/null)" || mounts_json="[]"
+
+  if [[ "$mounts_json" != "[]" ]]; then
+    while IFS=$'\t' read -r source target readonly; do
+      if [[ "$readonly" == "true" ]]; then
+        local prepared_mount
+        prepared_mount="$(_dvc_copy_file_for_mount "$source" mount)"
+        _dvc_add_mount "$prepared_mount" "$target"
+      else
+        _dvc_add_mount "$source" "$target"
+      fi
+    done < <(printf '%s' "$mounts_json" | python3 -c "
+import json, sys, os
+mounts = json.load(sys.stdin)
+for mount in mounts:
+  source = os.path.expanduser(mount.get('source', ''))
+  target = mount.get('target', '')
+  readonly = mount.get('readonly', False)
+  if source and target:
+    print(f'{source}\t{target}\t{str(readonly).lower()}')
+")
+  fi
+
+  local env_json
+  env_json="$(printf '%s' "$profile_json" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('env', {})))" 2>/dev/null)" || env_json="{}"
+
+  if [[ "$env_json" != "{}" ]]; then
+    while IFS= read -r line; do
+      local key="${line%%=*}"
+      local value="${line#*=}"
+      _DVC_UP_ARGS+=("--remote-env" "${key}=${value}")
+    done < <(printf '%s' "$env_json" | python3 -c "
+import json, sys
+env = json.load(sys.stdin)
+for k, v in env.items():
+  print(f'{k}={v}')
+")
+  fi
+
+  _dvc_add_nvim_up_args "$profile_json"
+  _dvc_add_agent_tools_up_args "$profile_json"
+}
+
+_dvc_build_exec_env_args_from_profile() {
+  local profile_json="$1"
+
+  [[ "$profile_json" == "{}" ]] && return 0
+
+  _DVC_EXEC_ENV_ARGS=(
+    "--remote-env" "SSH_AUTH_SOCK=/ssh-agent"
+  )
+
+  local git_ssh_command
+  if git_ssh_command="$(_dvc_git_ssh_command)"; then
+    _DVC_EXEC_ENV_ARGS+=(
+      "--remote-env" "GIT_SSH_COMMAND=${git_ssh_command}"
+    )
+  fi
+
+  local git_global_target
+  git_global_target="$(_dvc_gitconfig_global_target "$profile_json")"
+  if [[ -n "$git_global_target" ]]; then
+    _DVC_EXEC_ENV_ARGS+=(
+      "--remote-env" "GIT_CONFIG_GLOBAL=${git_global_target}"
+    )
+  fi
+
+  local env_json
+  env_json="$(printf '%s' "$profile_json" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin).get('env', {})))" 2>/dev/null)" || env_json="{}"
+
+  if [[ "$env_json" != "{}" ]]; then
+    while IFS= read -r line; do
+      local key="${line%%=*}"
+      local value="${line#*=}"
+      _DVC_EXEC_ENV_ARGS+=("--remote-env" "${key}=${value}")
+    done < <(printf '%s' "$env_json" | python3 -c "
+import json, sys
+env = json.load(sys.stdin)
+for k, v in env.items():
+  print(f'{k}={v}')
+")
+  fi
+
+  _dvc_add_nvim_exec_env_args "$profile_json"
+  _dvc_add_agent_tools_exec_env_args "$profile_json"
+}
+
+_DVC_PROFILE_EXPLICIT=false
+
+_dvc_has_explicit_profile() {
+  local args=("$@")
+  for arg in "${args[@]}"; do
+    [[ "$arg" == "--profile" || "$arg" == "-p" ]] && return 0
+  done
+  return 1
+}
+
+_dvc_launch_agent() {
+  local agent="$1"
+  shift
+
+  if [[ "${_DVC_CONFIG_JSON:-}" == "" ]]; then
+    _dvc_error "user config not found. Set DVC_CONFIG_PATH or create ~/.config/dvc/config.json"
+  fi
+
+  if _dvc_has_explicit_profile "$@"; then
+    _DVC_PROFILE_EXPLICIT=true
+  fi
+  _dvc_parse_profile_arg "$@"
+
+  local filtered_args=("${_DVC_FILTERED_ARGS[@]}")
+  local profile_name=""
+  local cached_profile=""
+  cached_profile="$(_dvc_get_cached_profile)" || cached_profile=""
+
+  if [[ -n "$_DVC_PROFILE" ]]; then
+    profile_name="$_DVC_PROFILE"
+  elif [[ -n "$cached_profile" ]]; then
+    profile_name="$cached_profile"
+  else
+    profile_name="$(_dvc_get_default_profile)"
+  fi
+  [[ -n "$profile_name" ]] || _dvc_error "no defaultProfile defined in config"
+
+  local profile_json
+  profile_json="$(_dvc_get_profile "$profile_name")"
+  [[ "$profile_json" != "{}" ]] || _dvc_error "profile '$profile_name' not found in config"
+
+  local enabled=false tool install mode config_path
+  while IFS=$'\t' read -r tool install mode config_path; do
+    if [[ "$tool" == "$agent" && "$install" == "true" ]]; then
+      enabled=true
+      break
+    fi
+  done < <(_dvc_agent_tool_settings "$profile_json")
+  [[ "$enabled" == "true" ]] || _dvc_error "profile '$profile_name' does not install ${agent}; enable tools.${agent}.install first"
+
+  _dvc_build_exec_env_args_from_profile "$profile_json"
+  _dvc_exec_running_container "$agent" "${filtered_args[@]}"
+}
+
+_dvc_parse_profile_arg() {
+  local args=("$@")
+  _DVC_FILTERED_ARGS=()
+  local profile=""
+
+  _DVC_PROFILE_EXPLICIT=false
+
+  local i=0
+  while [[ $i -lt ${#args[@]} ]]; do
+    local arg="${args[$i]}"
+    if [[ "$arg" == "--profile" || "$arg" == "-p" ]]; then
+      if [[ $((i + 1)) -lt ${#args[@]} ]]; then
+        profile="${args[$((i + 1))]}"
+        _DVC_PROFILE_EXPLICIT=true
+        ((i += 2))
+        continue
+      else
+        _dvc_error "${arg} requires a value"
+      fi
+    fi
+    _DVC_FILTERED_ARGS+=("$arg")
+    ((i += 1))
+  done
+
+  _DVC_PROFILE="$profile"
+}
+
+_dvc_expand_up_shortcuts() {
+  local args=("$@")
+  _DVC_FILTERED_ARGS=()
+
+  local arg
+  for arg in "${args[@]}"; do
+    case "$arg" in
+      -r)
+        _DVC_FILTERED_ARGS+=("--remove-existing-container")
+        ;;
+      *)
+        _DVC_FILTERED_ARGS+=("$arg")
+        ;;
+    esac
+  done
+}
+
+_dvc_build_args_from_profile() {
+  local profile_json="$1"
+  local features_json
+
+  features_json="$(_dvc_profile_features_json "$profile_json")"
+  [[ "$features_json" != "{}" ]] && _DVC_BUILD_ARGS+=("--additional-features" "$features_json")
+}
+
+_dvc_help() {
+  cat << 'EOF'
+dvc — devcontainer wrapper with profile-based configuration
+
+Usage: dvc <command> [options]
+
+Commands:
+  build      Build the devcontainer image with the selected profile's Features
+  up         Start the devcontainer and apply personal container dotfiles
+  status     Show containers in the current devcontainer project
+  start      Start containers in the current devcontainer project
+  stop       Stop containers in the current devcontainer project
+  down       Stop and remove containers and project networks (keeps volumes)
+  rm, remove Alias for down
+  codex      Start a Codex session in the running devcontainer
+  claude     Start a Claude Code session in the running devcontainer
+  copilot    Start a GitHub Copilot CLI session in the running devcontainer
+  exec       Execute a command in the running devcontainer
+  shell      Start an interactive Bash shell in the running devcontainer
+  bootstrap  Re-run the personal container bootstrap in a running devcontainer
+  doctor     Check the personal container tooling in a running devcontainer
+  config     Show user and current-project configuration paths
+  help       Show this help message
+
+  Any other command is passed through to devcontainer CLI unchanged.
+
+Options:
+  -p, --profile <name>  Select which profile to use (overrides cached/default)
+  -r                    For 'dvc up', recreate an existing devcontainer
+                         (expands to --remove-existing-container)
+  -v, --volumes          For 'dvc down', also remove project-owned named volumes
+
+Configuration:
+  User config:    $DVC_CONFIG_PATH or ~/.config/dvc/config.json
+  Project overlay: $DVC_PROJECT_CONFIG_PATH or
+                   ~/.config/dvc/projects/<project-key>.json
+
+  Project overlays are optional and live under the user config directory;
+  they are never created inside a project checkout. Run 'dvc config paths' to
+  print the exact path for the current project.
+
+Profiles:
+  Profiles can use "extends" and control mounts, env vars, Features, and
+  personal tools. A profile's tools.nvim.mode is either "container" (the
+  bootstrap-managed config) or "mount" (host config and plugin data).
+  If --profile is not specified, uses the cached profile from the last 'build' or 'up',
+  or the defaultProfile from the config.
+
+Examples:
+  dvc build                          # Build with default/cached profile
+  dvc build -p myprofile             # Build with specific profile
+  dvc up                             # Start the devcontainer
+  dvc status                         # Show its app and service containers
+  dvc stop                           # Stop the project, retaining containers and volumes
+  dvc down                           # Remove containers and networks, retaining volumes
+  dvc down --volumes                 # Also remove project-owned named volumes
+  dvc up -r                          # Recreate the current devcontainer
+  dvc codex                          # Start Codex in the container
+  dvc claude --continue              # Start Claude Code with CLI arguments
+  dvc copilot --continue             # Start GitHub Copilot CLI with CLI arguments
+  dvc exec --profile default bash    # Run bash in the container
+  dvc shell                          # Start an interactive container shell
+  dvc bootstrap                      # Re-run personal tool and config installation
+  dvc doctor                         # Verify personal tool and config installation
+  dvc config paths                   # Show external config locations for this project
+  dvc logs                           # Pass through to devcontainer CLI
+  dvc -- help                        # Get devcontainer CLI help
+
+EOF
+}
+
+_dvc_print_config_paths() {
+  local user_config project_config directory_config
+  local -a directory_config_files=()
+
+  if [[ -n "${DVC_CONFIG_PATH:-}" ]]; then
+    user_config="$DVC_CONFIG_PATH"
+  else
+    user_config="${HOME}/.config/dvc/config.json"
+  fi
+  project_config="$(_dvc_project_config_path)"
+  while IFS= read -r directory_config; do
+    [[ -n "$directory_config" ]] && directory_config_files+=("$directory_config")
+  done < <(_dvc_directory_config_paths)
+
+  printf 'User config:      %s\n' "$user_config"
+  if ((${#directory_config_files[@]} == 0)); then
+    printf 'Directory overlay: (none)\n'
+  else
+    for directory_config in "${directory_config_files[@]}"; do
+      printf 'Directory overlay: %s\n' "$directory_config"
+    done
+  fi
+  printf 'Project overlay:  %s\n' "$project_config"
+  printf 'Project key:      %s\n' "$(_dvc_project_key)"
+}
+
+dvc() {
+  local cmd="${1:-}"
+
+  if [[ "$cmd" == "help" ]] || [[ "$cmd" == "-h" ]] || [[ "$cmd" == "--help" ]]; then
+    _dvc_help
+    return 0
+  fi
+
+  if [[ -z "$cmd" ]]; then
+    _dvc_help
+    return 1
+  fi
+
+  shift || true
+
+  _DVC_UP_ARGS=()
+  _DVC_BUILD_ARGS=()
+  _DVC_EXEC_ENV_ARGS=()
+
+  _dvc_load_config
+
+  if [[ "$cmd" == "config" ]]; then
+    case "${1:-paths}" in
+      paths)
+        _dvc_print_config_paths
+        return 0
+        ;;
+      *)
+        _dvc_error "unknown config command '${1:-}'. Try 'dvc config paths'"
+        ;;
+    esac
+  fi
+
+  if [[ "$cmd" == "bootstrap" ]]; then
+    local dotfiles_target
+    dotfiles_target="$(_dvc_dotfiles_get targetPath)"
+    dotfiles_target="${dotfiles_target:-~/dotfiles}"
+
+    dvc exec "$@" \
+      --remote-env "DVC_DOTFILES_TARGET_PATH=${dotfiles_target}" \
+      bash -lc '
+        set -euo pipefail
+        dotfiles_target="${DVC_DOTFILES_TARGET_PATH:-~/dotfiles}"
+        if [[ "$dotfiles_target" == "~/"* ]]; then
+          dotfiles_target="${HOME}/${dotfiles_target:2}"
+        fi
+        if [[ -d "${dotfiles_target}/.git" ]]; then
+          git -C "$dotfiles_target" pull --ff-only
+        fi
+        install_script="${dotfiles_target}/devcontainer/install.sh"
+        if [[ ! -x "$install_script" ]]; then
+          printf "dvc bootstrap: dotfiles install script not found at %s\\n" "$install_script" >&2
+          exit 1
+        fi
+        exec "$install_script"
+      '
+    return $?
+  fi
+
+  if [[ "$cmd" == "doctor" ]]; then
+    dvc exec "$@" dvc-devcontainer-doctor
+    return $?
+  fi
+
+  if [[ "$cmd" == "shell" ]]; then
+    dvc exec "$@" bash -il
+    return $?
+  fi
+
+  if [[ "$cmd" == "status" ]] || [[ "$cmd" == "start" ]] || [[ "$cmd" == "stop" ]] || \
+     [[ "$cmd" == "down" ]] || [[ "$cmd" == "rm" ]] || [[ "$cmd" == "remove" ]]; then
+    _dvc_lifecycle "$cmd" "$@"
+    return $?
+  fi
+
+  if [[ "$cmd" == "codex" ]] || [[ "$cmd" == "claude" ]] || [[ "$cmd" == "copilot" ]] || [[ "$cmd" == "omp" ]]; then
+    _dvc_launch_agent "$cmd" "$@"
+    return $?
+  fi
+
+  if [[ "$cmd" == "build" ]] || [[ "$cmd" == "up" ]] || [[ "$cmd" == "exec" ]]; then
+    if [[ "${_DVC_CONFIG_JSON:-}" == "" ]]; then
+      _dvc_error "user config not found. Set DVC_CONFIG_PATH or create ~/.config/dvc/config.json"
+    fi
+
+    if _dvc_has_explicit_profile "$@"; then
+      _DVC_PROFILE_EXPLICIT=true
+    fi
+
+    _dvc_parse_profile_arg "$@"
+    local filtered_args=("${_DVC_FILTERED_ARGS[@]}")
+
+    if [[ "$cmd" == "up" ]]; then
+      _dvc_expand_up_shortcuts "${filtered_args[@]}"
+      filtered_args=("${_DVC_FILTERED_ARGS[@]}")
+    fi
+
+    local profile_name=""
+    local cached_profile=""
+
+    cached_profile="$(_dvc_get_cached_profile)" || cached_profile=""
+
+    if [[ -n "$_DVC_PROFILE" ]]; then
+      profile_name="$_DVC_PROFILE"
+
+      if [[ "$_DVC_PROFILE_EXPLICIT" == "true" ]] && [[ -n "$cached_profile" ]] && [[ "$profile_name" != "$cached_profile" ]]; then
+        _dvc_warn "profile '$profile_name' differs from profile '$cached_profile' used previously in this workspace; the container may not have the expected features/mounts. Consider rebuilding with 'dvc build --profile $profile_name'."
+      fi
+    elif [[ -n "$cached_profile" ]]; then
+      profile_name="$cached_profile"
+    else
+      profile_name="$(_dvc_get_default_profile)"
+      if [[ -z "$profile_name" ]]; then
+        _dvc_error "no defaultProfile defined in config"
+      fi
+    fi
+
+    local profile_json
+    profile_json="$(_dvc_get_profile "$profile_name")"
+
+    if [[ "$profile_json" == "{}" ]]; then
+      _dvc_error "profile '$profile_name' not found in config"
+    fi
+
+    local devcontainer_result=0
+
+    case "$cmd" in
+      build)
+        _dvc_build_args_from_profile "$profile_json"
+        devcontainer build "${_DVC_BUILD_ARGS[@]}" "${filtered_args[@]}" || devcontainer_result=$?
+        if [[ $devcontainer_result -eq 0 ]]; then
+          _dvc_save_profile "$profile_name"
+        fi
+        ;;
+      up)
+        _dvc_build_up_args_from_profile "$profile_json"
+        _dvc_add_dotfiles_args
+        devcontainer up "${_DVC_UP_ARGS[@]}" "${filtered_args[@]}" || devcontainer_result=$?
+        if [[ $devcontainer_result -eq 0 ]]; then
+          _dvc_save_profile "$profile_name"
+        fi
+        ;;
+      exec)
+        _dvc_build_exec_env_args_from_profile "$profile_json"
+        _dvc_exec_running_container "${filtered_args[@]}" || devcontainer_result=$?
+        ;;
+    esac
+
+    return $devcontainer_result
+  else
+    devcontainer "$cmd" "$@"
+  fi
+}
+
+_dvc_is_sourced() {
+  if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    [[ "${BASH_SOURCE[0]}" != "${0}" ]]
+    return
+  fi
+  if [[ -n "${BASH_SOURCE[1]:-}" ]]; then
+    [[ "${BASH_SOURCE[1]}" != "${0}" ]]
+    return
+  fi
+  [[ "${ZSH_EVAL_CONTEXT:-}" == *:file* ]]
+}
+
+if ! _dvc_is_sourced; then
+  dvc "$@"
+fi

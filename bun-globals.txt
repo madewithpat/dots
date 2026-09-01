@@ -1,0 +1,10 @@
+# @tobilu/qmd is load-bearing — the second-brain vault's Auto-Retrieve
+# workflow (CLAUDE.md) depends on it being present. A machine bootstrapped
+# without this line would look fully set up but have silently broken vault
+# search.
+@tobilu/qmd
+
+# @devcontainers/cli provides the `devcontainer` binary the dvc package's
+# .local/bin/dvc wrapper shells out to. Without this, `dvc` resolves on PATH
+# but every subcommand fails with "devcontainer: command not found".
+@devcontainers/cli
