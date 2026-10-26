@@ -67,6 +67,16 @@ else
   echo "==> Claude Code already installed, skipping."
 fi
 
+# ── Step 5b: Install herdr ────────────────────────────────────────────────────
+# Native installer, not brew: `herdr update --handoff` (live update that keeps
+# pane processes running) only works on installs herdr's own updater manages.
+if ! command -v herdr &>/dev/null; then
+  echo "==> Installing herdr..."
+  curl -fsSL https://herdr.dev/install.sh | sh
+else
+  echo "==> herdr already installed, skipping."
+fi
+
 # ── Step 5c: Install oh-my-pi (omp) — macOS only for now, see stow.sh ─────────
 if [[ "$(uname)" == "Darwin" ]] && ! command -v omp &>/dev/null; then
   echo "==> Installing oh-my-pi (omp)..."
