@@ -21,5 +21,6 @@ brew "gh"
 brew "awscli"
 
 # ── AI tools ──────────────────────────────────────────────────────────────────
+brew "herdr"     # agent multiplexer — tracks agent state per pane
 # Claude Code: installed separately via curl installer, not a brew package
 # See bootstrap.sh step 4
