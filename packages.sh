@@ -14,5 +14,6 @@ fi
 
 if command -v bun &>/dev/null && [[ -s "$SCRIPT_DIR/bun-globals.txt" ]]; then
   echo "==> Installing bun globals..."
-  xargs -I{} bun install -g {} < "$SCRIPT_DIR/bun-globals.txt"
+  # Strip comments/blank lines — bun-globals.txt documents why each entry exists.
+  grep -vE '^\s*(#|$)' "$SCRIPT_DIR/bun-globals.txt" | xargs bun install -g
 fi

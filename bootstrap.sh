@@ -19,7 +19,7 @@ for dir in .config/nvim .config/starship.toml .config/tmux .config/shell \
   .claude/settings.json .claude/statusline-command.sh .claude/file-suggestion.sh \
   .omp/agent/models.yml \
   .local/bin/ornith .local/bin/llama-server-ornith-wrapper.sh .local/bin/ollama-ornith-setup.sh \
-  .local/bin/sesh-picker \
+  .local/bin/sesh-picker .local/bin/qmd \
   Library/LaunchAgents/com.mwp.llama-server-ornith.plist; do
   target="$HOME/$dir"
   if [[ -e "$target" && ! -L "$target" ]]; then
@@ -46,6 +46,16 @@ else
   echo "==> Homebrew already installed, skipping."
 fi
 
+# ── Step 4a: Install bun — before packages.sh, which installs bun-globals.txt ─
+if ! command -v bun &>/dev/null; then
+  echo "==> Installing bun..."
+  curl -fsSL https://bun.sh/install | bash
+else
+  echo "==> bun already installed, skipping."
+fi
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+
 # ── Step 4: Install packages ──────────────────────────────────────────────────
 "$SCRIPT_DIR/packages.sh"
 
@@ -55,14 +65,6 @@ if ! command -v claude &>/dev/null; then
   curl -fsSL https://claude.ai/install.sh | bash
 else
   echo "==> Claude Code already installed, skipping."
-fi
-
-# ── Step 5b: Install bun ──────────────────────────────────────────────────────
-if ! command -v bun &>/dev/null; then
-  echo "==> Installing bun..."
-  curl -fsSL https://bun.sh/install | bash
-else
-  echo "==> bun already installed, skipping."
 fi
 
 # ── Step 5c: Install oh-my-pi (omp) — macOS only for now, see stow.sh ─────────

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# qmd's own launcher (bin/qmd) has a `#!/usr/bin/env node` shebang, so on a
+# machine with bun but no node, `qmd` dies with "env: 'node': No such file or
+# directory" before it can hand off to bun. Run the launcher under bun
+# directly instead. Needs ~/.local/bin ahead of ~/.bun/bin on PATH — see
+# bash/.bash_profile.
+qmd_launcher="${BUN_INSTALL:-$HOME/.bun}/install/global/node_modules/@tobilu/qmd/bin/qmd"
+if [[ ! -f "$qmd_launcher" ]]; then
+  echo "qmd: not installed via bun — run: bun install -g @tobilu/qmd" >&2
+  exit 1
+fi
+exec bun "$qmd_launcher" "$@"
