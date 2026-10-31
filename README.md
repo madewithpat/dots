@@ -20,15 +20,18 @@ git clone git@github.com:madewithpat/dots.git ~/dots && ~/dots/bootstrap.sh
 | `shell-common` | `~/.config/shell/common.sh`, `common-interactive.sh` | universal |
 | `bash`   | `~/.bashrc`, `~/.bash_profile`  | Linux |
 | `zsh`    | `~/.zshrc`                       | macOS |
+| `ghostty` | `~/.config/ghostty/config` — FiraCode Nerd Font, `TokyoNight Day`/`TokyoNight Moon` pair; includes the local, untracked `~/.config/ghostty/theme-mode` (`window-theme = light|dark`, written by `herdr-theme`) so dark/light is toggled on command instead of following macOS | macOS |
 | `tmux`   | `~/.tmux.conf`                  | universal |
+| `herdr`  | `~/.config/herdr/config.toml` — tmux-style `prefix+|`/`prefix+-` splits, `prefix+f` folder→workspace picker, `prefix+!` break pane to tab, `prefix+shift+hjkl` swap panes, `prefix+space` / `prefix+alt+1..4` tmux-style layouts (`scripts/herdr-layout`), theme follows terminal dark/light; vim-aware `C-hjkl` via `scripts/herdr-smart-nav` (pairs with `nvim/lua/plugins/smart-splits.lua` + `lua/herdr_smart_splits.lua`) | universal |
 | `starship` | `~/.config/starship.toml`     | universal |
-| `nvim`   | `~/.config/nvim/` (LazyVim)     | universal |
+| `nvim`   | `~/.config/nvim/` (LazyVim; extras tracked in `lazyvim.json`) — smart-splits nav/resize across tmux/herdr, Octo PR review in Worktrunk worktrees (`<leader>go*`, `<leader>gw`), obsidian.nvim loaded only inside vaults, Snacks inline images incl. Obsidian `![[embeds]]` | universal |
+| `worktrunk` | `~/.config/worktrunk/config.toml` — worktrees at `.worktrees/{branch}`; `wt` itself from the Brewfile | universal |
 | `claude` | `~/.claude/settings.json`, `statusline-command.sh`, `file-suggestion.sh` | universal |
 | `ornith` | `~/.local/bin/ornith` (+ 2 helper scripts), `~/Library/LaunchAgents/com.mwp.llama-server-ornith.plist` | macOS (this Mac only — the local LLM server) |
 | `omp`    | `~/.omp/agent/models.yml` — registers `ornith-local` at `localhost:11434`, not default; `~/.omp/agent/config.yml` — statusLine/theme/task/model-role preferences | macOS |
 | `omp-ggt` | `~/.omp/profiles/ggt/agent/config.yml` — same statusLine/theme/task/model-role prefs as `omp`, minus the personal `ornith-local` provider registration (that lives only in the default profile's `models.yml`), so `omp --profile ggt` work sessions can't reach personal infra. No `models.yml` shipped yet — add one here if GGT needs its own provider registrations. | macOS |
 | `dvc`    | `~/.local/bin/dvc`, `~/.config/dvc/config.json` — profile-based devcontainer wrapper (`dvc build/up/exec/shell/status/...`); named `dvc` not `dc` since `/usr/bin/dc` (the calculator) already owns that name. Ported from work-dots' `dc` package — `bootstrap`/`doctor` subcommands are wired but inert until the matching `devcontainer/` package is also ported. | universal |
-| `scripts` | `~/.local/bin/sesh-picker` — small helper scripts that don't warrant their own package; aliased as `sp` in `bash`/`shell-common` | universal |
+| `scripts` | `~/.local/bin/sesh-picker`, `herdr-picker`, `herdr-smart-nav`, `herdr-theme` (Ghostty + herdr dark/light toggle, `prefix+u`), `herdr-layout` (preset layouts) — small helper scripts that don't warrant their own package; `sp`/`hp` aliases | universal |
 
 `shell-common` and `bash`/`zsh` are independent axes — see PLAN.md
 Conventions. `stow.sh` picks the right set for `$(uname)` automatically;

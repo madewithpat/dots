@@ -6,9 +6,9 @@ TARGET="$HOME"
 SIMULATE=false
 
 # Shell and OS are independent axes — see PLAN.md Conventions.
-UNIVERSAL=(git shell-common tmux starship claude nvim dvc scripts)
+UNIVERSAL=(git shell-common tmux herdr starship claude nvim worktrunk dvc scripts)
 case "$(uname)" in
-  Darwin) PACKAGES=("${UNIVERSAL[@]}" zsh ornith omp omp-ggt) ;;
+  Darwin) PACKAGES=("${UNIVERSAL[@]}" zsh ghostty ornith omp omp-ggt) ;;
   Linux)  PACKAGES=("${UNIVERSAL[@]}" bash) ;;
   *)      PACKAGES=("${UNIVERSAL[@]}") ;;
 esac
@@ -44,7 +44,9 @@ fi
 # but a real bug for any directory a tool also writes runtime state into —
 # hit this for real with omp's session/model caches landing inside this git
 # repo. Individual file symlinks only, always.
-STOW_FLAGS=(--dir="$SCRIPT_DIR" --target="$TARGET" --verbose=1 --no-folding)
+# --ignore: omp writes config.yml.lock beside the real (in-repo) config.yml its
+# symlink points to; those runtime locks must not be stowed back into $HOME.
+STOW_FLAGS=(--dir="$SCRIPT_DIR" --target="$TARGET" --verbose=1 --no-folding --ignore='\.lock$')
 if $SIMULATE; then
   STOW_FLAGS+=(--simulate)
   echo "==> Simulating stow (no changes will be made)..."
