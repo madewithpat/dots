@@ -19,9 +19,8 @@ statusLine:
       showUnstaged: true
       showUntracked: true
     model:
-      showThinkingLevel: false
+      showThinkingLevel: true
   contextLine: embedded
-  compactThinkingLevel: true
 github:
   enabled: true
 vault:
@@ -32,24 +31,12 @@ task:
   maxConcurrency: 8
   enableEffort: true
   maxRecursionDepth: 1
-  agentModelOverrides:
-    designer: anthropic/claude-sonnet-5
-    librarian: anthropic/claude-sonnet-5
-    reviewer: anthropic/claude-opus-5
-    scout: anthropic/claude-haiku-4-5
-    security-reviewer: anthropic/claude-opus-5
-    sonic: anthropic/claude-haiku-4-5
-    task: anthropic/claude-sonnet-5
   showResolvedModelBadge: true
 composer:
   shape: rule
-providers:
-  webSearchOrder:
-    []
 modelRoles:
-  default: anthropic/claude-sonnet-5
-  smol: anthropic/claude-haiku-4-5:auto
-  slow: anthropic/claude-opus-5:auto
+  default: anthropic/claude-opus-5-5
+  tiny: apple/on-device
 defaultThinkingLevel: auto
 theme:
   dark: dark-tokyo-night

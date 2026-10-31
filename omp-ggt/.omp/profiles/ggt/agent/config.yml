@@ -36,9 +36,9 @@ task:
 composer:
   shape: rule
 modelRoles:
-  default: anthropic/claude-sonnet-5
   smol: anthropic/claude-haiku-4-5
   slow: anthropic/claude-opus-5
+  default: anthropic/claude-sonnet-5
 defaultThinkingLevel: auto
 theme:
   dark: dark-tokyo-night
@@ -46,3 +46,6 @@ theme:
 symbolPreset: nerd
 display:
   showTokenUsage: true
+providers:
+  webSearchOrder:
+    []

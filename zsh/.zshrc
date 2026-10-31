@@ -64,6 +64,7 @@ if command -v yazi &>/dev/null; then
 fi
 
 alias sp='sesh-picker'
+alias hp='herdr-picker'
 
 # Hermes Agent — ensure ~/.local/bin is on PATH
 export PATH="$HOME/.local/bin:$PATH"
@@ -81,3 +82,5 @@ export PATH="/opt/homebrew/opt/libpq/bin:$PATH"
 
 # Ornith-1.5-35B local LLM server control now lives in the `ornith` package
 # (~/.local/bin/ornith, already on PATH above) — no alias needed here.
+
+if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi

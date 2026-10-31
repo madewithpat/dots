@@ -1,9 +1,9 @@
 {
-  "model": "sonnet",
   "fileSuggestion": {
     "type": "command",
     "command": "bash $HOME/.claude/file-suggestion.sh"
   },
+  "model": "opus",
   "statusLine": {
     "type": "command",
     "command": "bash $HOME/.claude/statusline-command.sh"
@@ -12,9 +12,15 @@
     "superpowers@claude-plugins-official": false,
     "context7@claude-plugins-official": true,
     "typescript-lsp@claude-plugins-official": true,
-    "skill-creator@claude-plugins-official": true
+    "skill-creator@claude-plugins-official": true,
+    "clangd-lsp@claude-plugins-official": true
   },
   "effortLevel": "xhigh",
+  "modelSettings": {
+    "claude-opus-5-5": {
+      "effortLevel": "medium"
+    }
+  },
   "tui": "fullscreen",
   "agentPushNotifEnabled": true,
   "hooks": {
