@@ -1,7 +1,53 @@
+-- Vault roots. Shared by the lazy-load detector and obsidian.nvim's
+-- `workspaces`, since a vault need not contain `.obsidian/` (e.g. a git
+-- checkout that never opened in the Obsidian app).
+local vaults = {
+  { name = "second-brain", path = "/Users/patrick/src/second-brain" },
+}
+
 return {
   {
     "obsidian-nvim/obsidian.nvim",
-    ft = "markdown",
+    -- A plain `ft = "markdown"` loads this plugin for every README and
+    -- project document. Load it only when a Markdown buffer belongs to an
+    -- Obsidian vault instead; direct Obsidian keymaps below remain explicit
+    -- load triggers, so they still work from any buffer.
+    init = function()
+      local group = vim.api.nvim_create_augroup("obsidian_vault_loader", { clear = true })
+      vim.api.nvim_create_autocmd("BufEnter", {
+        group = group,
+        callback = function(event)
+          if vim.bo[event.buf].filetype ~= "markdown" then
+            return
+          end
+
+          local path = vim.api.nvim_buf_get_name(event.buf)
+          if path == "" then
+            return
+          end
+          path = vim.fs.normalize(vim.fn.fnamemodify(path, ":p"))
+          local vault = vim.fs.find(".obsidian", { path = vim.fs.dirname(path), upward = true, type = "directory" })[1]
+          if not vault then
+            for _, ws in ipairs(vaults) do
+              local root = vim.fs.normalize(vim.fn.expand(ws.path))
+              if path:sub(1, #root + 1) == root .. "/" then
+                vault = root
+                break
+              end
+            end
+          end
+          if not vault or package.loaded["obsidian"] then
+            return
+          end
+
+          require("lazy").load({ plugins = { "obsidian.nvim" } })
+          -- FileType has already fired by BufEnter. Replay only obsidian.nvim's
+          -- handlers once so the first vault note receives its buffer setup.
+          vim.api.nvim_exec_autocmds("FileType", { group = "obsidian_setup", buffer = event.buf, modeline = false })
+          vim.api.nvim_exec_autocmds("BufEnter", { group = "obsidian_setup", buffer = event.buf, modeline = false })
+        end,
+      })
+    end,
     -- `keys` is also a load trigger for lazy.nvim, independent of `ft` — so
     -- pressing e.g. <leader>oo loads obsidian.nvim and runs the command even
     -- from a non-markdown buffer, instead of requiring a .md file to already
@@ -51,9 +97,8 @@ return {
       { "<leader>ocf", function() require("obsidian.actions").set_checkbox(">") end, desc = "Checkbox: forwarded" },
     },
     opts = {
-      workspaces = {
-        { name = "second-brain", path = "/Users/patrick/src/second-brain" },
-      },
+      -- obsidian.nvim requires at least one workspace; see `vaults` above.
+      workspaces = vaults,
       -- fzf-lua isn't actually installed here — checked, it's absent from
       -- ~/.local/share/nvim/lazy entirely. LazyVim's real default picker is
       -- "auto" (unset in this config), which resolves to snacks.nvim since
@@ -62,7 +107,7 @@ return {
       -- installed and already has picker settings configured in
       -- lua/plugins/snacks.lua. (ovim is unaffected — fzf-lua is a real,
       -- deliberately-installed plugin there.)
-      picker = { name = "snacks" },
+      picker = { name = "snacks.picker" },
       legacy_commands = false,
       -- obsidian.nvim's own UI renderer (checkboxes/bullets, on by default)
       -- conflicts with render-markdown.nvim — both try to conceal the same

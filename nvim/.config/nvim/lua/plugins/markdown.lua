@@ -10,7 +10,10 @@
 -- defaults.
 return {
   "MeanderingProgrammer/render-markdown.nvim",
+  -- Octo PR/issue buffers are GitHub markdown (lua/plugins/octo.lua).
+  ft = { "octo" },
   opts = {
+    file_types = { "markdown", "octo" },
     checkbox = {
       enabled = true,
       -- render-markdown only knows the 2 CommonMark states (unchecked/
@@ -32,5 +35,21 @@ return {
     -- plugin default is right_pad = 0, which puts text flush against the
     -- bullet glyph; add a space of breathing room.
     bullet = { right_pad = 1 },
+    -- GitHub markdown (READMEs, Octo PR/issue bodies) embeds raw HTML.
+    -- render-markdown only hides tags listed here, replacing each opening
+    -- tag with its icon. <details> can't collapse in a buffer: its content
+    -- always shows. Images can't display, so <img> becomes a marker.
+    html = {
+      tag = {
+        details = { icon = "▾ ", highlight = "Special" },
+        summary = { icon = "", highlight = "Special", scope_highlight = "Title" },
+        picture = { icon = "" },
+        source = { icon = "" },
+        img = { icon = "[image] ", highlight = "Comment" },
+        kbd = { icon = "", scope_highlight = "Special" },
+        sub = { icon = "" },
+        sup = { icon = "" },
+      },
+    },
   },
 }

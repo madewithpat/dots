@@ -1,0 +1,6 @@
+# Personal Worktrunk defaults. This keeps linked worktrees adjacent to the
+# primary checkout without adding project-owned configuration.
+worktree-path = ".worktrees/{{ branch | sanitize }}"
+
+[list]
+json-schema = 1
