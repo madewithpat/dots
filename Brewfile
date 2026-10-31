@@ -1,5 +1,6 @@
 # ── QoL / shell tools ─────────────────────────────────────────────────────────
 brew "tree"
+brew "eza"
 brew "tmux"
 brew "sesh"
 brew "stow"

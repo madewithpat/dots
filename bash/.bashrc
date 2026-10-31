@@ -59,8 +59,9 @@ if command -v starship &>/dev/null; then
 fi
 
 # ── Aliases ───────────────────────────────────────────────────────────────────
-alias ll='ls -lah --color=auto'
-alias la='ls -A --color=auto'
+# Shared with zsh: ll/la/lst (eza when installed), git shorthand.
+[ -f "$HOME/.config/shell/common-interactive.sh" ] && source "$HOME/.config/shell/common-interactive.sh"
+
 alias ls='ls --color=auto'
 alias grep='grep --color=auto'
 alias ..='cd ..'
@@ -70,14 +71,6 @@ alias cp='cp -i'
 alias mv='mv -i'
 alias rm='rm -i'
 alias sp='sesh-picker'
-
-# git shorthand (beyond what's in .gitconfig)
-alias g='git'
-alias gs='git st'
-alias gd='git diff'
-alias gc='git commit'
-alias gp='git push'
-alias gl='git lg'
 
 # ── Local overrides (machine-specific, not committed) ─────────────────────────
 [[ -f "$HOME/.bashrc.local" ]] && source "$HOME/.bashrc.local"
