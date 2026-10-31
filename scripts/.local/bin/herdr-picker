@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# Folder -> herdr workspace picker (`hp`; `prefix+f` popup inside herdr).
+#
+# Lists open herdr workspaces plus zoxide folders (ctrl-f: fd over ~). Picking
+# a workspace focuses it. Picking a folder focuses the workspace already open
+# there, or creates one named after the folder. Outside herdr it then attaches,
+# starting the herdr server first if needed. sesh-picker (`sp`) stays the tmux
+# equivalent.
+set -euo pipefail
+
+herdr="${HERDR_BIN_PATH:-herdr}"
+
+require() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'herdr-picker: %s is required\n' "$1" >&2
+    exit 127
+  fi
+}
+
+# Panes carry HERDR_ENV; key-command popups carry HERDR_ACTIVE_PANE_ID.
+inside_herdr() {
+  [[ -n "${HERDR_ENV:-}" || -n "${HERDR_ACTIVE_PANE_ID:-}" ]]
+}
+
+server_running() {
+  "$herdr" status server 2>/dev/null | grep -q '^status: running'
+}
+
+# Rows are "<kind>\t<id-or-path>\t<display>"; fzf shows only <display>.
+# Icons and colours match `sesh list --icons`: blue session, cyan folder.
+ws_icon=$'\e[34m\uebc8\e[39m'
+dir_icon=$'\e[36m\uf114\e[39m'
+
+list_workspaces() {
+  server_running || return 0
+  "$herdr" workspace list 2>/dev/null |
+    jq -r --arg icon "$ws_icon" \
+      '.result.workspaces[]? | "ws\t\(.workspace_id)\t\($icon) \(.label)"' || true
+}
+
+list_dirs() {
+  local dir
+  while IFS= read -r dir; do
+    printf 'dir\t%s\t%s %s\n' "$dir" "$dir_icon" "${dir/#"$HOME"/\~}"
+  done
+}
+
+# Live screen of the workspace's focused pane in its active tab.
+preview_workspace() {
+  local pane
+  pane="$(
+    jq -rn --arg ws "$1" \
+      --argjson workspaces "$("$herdr" workspace list)" \
+      --argjson panes "$("$herdr" pane list)" '
+      ($workspaces.result.workspaces[] | select(.workspace_id == $ws) | .active_tab_id) as $tab
+      | [$panes.result.panes[] | select(.tab_id == $tab)]
+      | (map(select(.focused)) + .)[0].pane_id // empty'
+  )" || return 0
+  [[ -n "$pane" ]] && "$herdr" pane read "$pane" --source visible --format ansi
+}
+
+list_rows() {
+  case "${1:-all}" in
+    all)
+      list_workspaces
+      zoxide query -l 2>/dev/null | list_dirs || true
+      ;;
+    find)
+      fd -H -d 2 -t d -E .Trash . "$HOME" 2>/dev/null | sed 's:/$::' | list_dirs || true
+      ;;
+    *)
+      printf 'herdr-picker: unknown list mode: %s\n' "$1" >&2
+      return 2
+      ;;
+  esac
+}
+
+ensure_server() {
+  server_running && return 0
+  # setsid is Linux-only; on macOS nohup + disown detaches it from the picker.
+  if command -v setsid >/dev/null 2>&1; then
+    setsid -f "$herdr" server >/dev/null 2>&1 </dev/null
+  else
+    nohup "$herdr" server >/dev/null 2>&1 </dev/null &
+    disown
+  fi
+  local _
+  for _ in $(seq 50); do
+    server_running && return 0
+    sleep 0.1
+  done
+  echo "herdr-picker: herdr server did not start" >&2
+  exit 1
+}
+
+# A workspace "is" a folder when any of its panes started or now sits there.
+workspace_for_dir() {
+  "$herdr" pane list 2>/dev/null |
+    jq -r --arg dir "$1" \
+      'first(.result.panes[]? | select(.cwd == $dir or .foreground_cwd == $dir) | .workspace_id) // empty'
+}
+
+open_dir() {
+  local dir="$1" id
+  id="$(workspace_for_dir "$dir")"
+  if [[ -n "$id" ]]; then
+    "$herdr" workspace focus "$id" >/dev/null
+  else
+    "$herdr" workspace create --cwd "$dir" --label "$(basename "$dir")" --focus >/dev/null
+  fi
+}
+
+if [[ "${1:-}" == "--list" ]]; then
+  list_rows "${2:-all}"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--preview-ws" ]]; then
+  preview_workspace "${2:?workspace id}"
+  exit 0
+fi
+
+require fzf
+require jq
+require zoxide
+require fd
+
+self="${BASH_SOURCE[0]}"
+if [[ "$self" != */* ]]; then
+  self="$(command -v -- "$self")"
+fi
+printf -v self_q '%q' "$self"
+
+# Explicit heights: a FZF_DEFAULT_OPTS height (e.g. 40%) would
+# leave most of the herdr popup empty.
+fzf_opts=(--layout=reverse --border --border-label ' herdr ')
+if inside_herdr; then
+  fzf_opts+=(--height 100%)
+else
+  fzf_opts+=(--height 80%)
+fi
+
+if command -v eza >/dev/null 2>&1; then
+  dir_preview='eza --tree --level=2 --color=always --icons=always {2}'
+else
+  dir_preview='ls -la {2}'
+fi
+
+selected="$(
+  "$self" --list all | fzf "${fzf_opts[@]}" \
+    --no-sort --ansi --delimiter='\t' --with-nth=3 \
+    --prompt 'herdr> ' \
+    --header 'enter open | ctrl-a workspaces+zoxide | ctrl-f find in ~' \
+    --bind 'tab:down,btab:up' \
+    --bind "ctrl-a:change-prompt(herdr> )+reload($self_q --list all)" \
+    --bind "ctrl-f:change-prompt(find> )+reload($self_q --list find)" \
+    --preview-window 'right:50%' \
+    --preview "if [[ {1} == ws ]]; then $self_q --preview-ws {2}; else $dir_preview; fi"
+)" || exit 0
+[[ -n "$selected" ]] || exit 0
+
+IFS=$'\t' read -r kind target _ <<<"$selected"
+
+inside_herdr || ensure_server
+case "$kind" in
+  ws) "$herdr" workspace focus "$target" >/dev/null ;;
+  dir) open_dir "$target" ;;
+esac
+
+inside_herdr || exec "$herdr"

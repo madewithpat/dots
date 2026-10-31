@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# tmux-style preset layouts for herdr, which has none built in.
+#
+#   herdr-layout [next|even-horizontal|even-vertical|main-vertical|tiled] [pane-id]
+#
+# `next` (the default, bound to prefix+space) cycles through the presets in
+# that order, like tmux's next-layout. Panes keep their processes; they are
+# laid out in reading order (top-to-bottom, left-to-right).
+#
+# herdr can't rearrange panes within a tab (`pane move` into the same tab is a
+# no-op), so every pane but the first is parked in a temporary tab, then moved
+# back with explicit splits. `--ratio` is the share kept by the target pane,
+# so splitting the k-th of n equal slots off the remainder uses 1/(n-k).
+# The temporary tab closes itself once it is empty.
+set -euo pipefail
+
+herdr="${HERDR_BIN_PATH:-herdr}"
+layouts=(even-horizontal even-vertical main-vertical tiled)
+# Share of the width the main pane gets in main-vertical.
+main_ratio=0.6
+
+want="${1:-next}"
+pane="${2:-${HERDR_ACTIVE_PANE_ID:-${HERDR_PANE_ID:-}}}"
+if [[ -z "$pane" ]]; then
+  echo "herdr-layout: no pane; run inside herdr or pass a pane id" >&2
+  exit 2
+fi
+
+layout_json="$("$herdr" pane layout --pane "$pane")"
+tab="$(jq -r '.result.layout.tab_id' <<<"$layout_json")"
+focused="$(jq -r '.result.layout.focused_pane_id' <<<"$layout_json")"
+panes=()
+while IFS= read -r id; do panes+=("$id"); done < <(
+  jq -r '.result.layout.panes | sort_by(.rect.y, .rect.x)[].pane_id' <<<"$layout_json"
+)
+n=${#panes[@]}
+
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-layout"
+state_file="$state_dir/${tab//[^A-Za-z0-9_-]/_}"
+
+if [[ "$want" == next ]]; then
+  current="$(cat "$state_file" 2>/dev/null || true)"
+  want="${layouts[0]}"
+  for i in "${!layouts[@]}"; do
+    if [[ "${layouts[$i]}" == "$current" ]]; then
+      want="${layouts[$(((i + 1) % ${#layouts[@]}))]}"
+      break
+    fi
+  done
+fi
+case " ${layouts[*]} " in
+  *" $want "*) ;;
+  *)
+    echo "usage: herdr-layout [next|${layouts[*]// /|}] [pane-id]" >&2
+    exit 2
+    ;;
+esac
+
+mkdir -p "$state_dir"
+printf '%s\n' "$want" >"$state_file"
+
+notify() {
+  "$herdr" notification show "Layout: $want" >/dev/null 2>&1 || true
+}
+
+if ((n < 2)); then
+  notify
+  exit 0
+fi
+
+# Unzoom first, or the rebuilt splits stay hidden behind the zoomed pane.
+if [[ "$(jq -r '.result.layout.zoomed' <<<"$layout_json")" == true ]]; then
+  "$herdr" pane zoom --pane "$focused" >/dev/null 2>&1 || true
+fi
+
+# Park panes 2..n in a temporary tab, leaving the first alone in this one.
+tmp_tab="$("$herdr" pane move "${panes[1]}" --new-tab --no-focus | jq -r '.result.move_result.pane.tab_id')"
+for ((i = 2; i < n; i++)); do
+  "$herdr" pane move "${panes[$i]}" --tab "$tmp_tab" --split right --no-focus >/dev/null
+done
+
+# place PANE TARGET DIRECTION RATIO — split TARGET, TARGET keeping RATIO.
+place() {
+  "$herdr" pane move "$1" --tab "$tab" --target-pane "$2" --split "$3" --ratio "$4" --no-focus >/dev/null
+}
+
+# chain DIRECTION ID... — lay the first ID's slot out as equal slices.
+chain() {
+  local dir="$1"
+  shift
+  local ids=("$@") count=$# k
+  for ((k = 1; k < count; k++)); do
+    place "${ids[$k]}" "${ids[$((k - 1))]}" "$dir" "$(awk -v r="$((count - k + 1))" 'BEGIN { printf "%.4f", 1 / r }')"
+  done
+}
+
+case "$want" in
+  even-horizontal) chain right "${panes[@]}" ;;
+  even-vertical) chain down "${panes[@]}" ;;
+  main-vertical)
+    place "${panes[1]}" "${panes[0]}" right "$main_ratio"
+    chain down "${panes[@]:1}"
+    ;;
+  tiled)
+    cols="$(awk -v n="$n" 'BEGIN { c = int(sqrt(n)); if (c * c < n) c++; print c }')"
+    rows=$(((n + cols - 1) / cols))
+    heads=()
+    for ((r = 0; r < rows; r++)); do heads+=("${panes[$((r * cols))]}"); done
+    chain down "${heads[@]}"
+    for ((r = 0; r < rows; r++)); do
+      chain right "${panes[@]:$((r * cols)):$cols}"
+    done
+    ;;
+esac
+
+notify

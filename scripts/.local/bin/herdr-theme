@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Dark/light switch for Ghostty + herdr on macOS — the Mac counterpart of
+# work-dots' herdr-theme (Windows Terminal), bound to prefix+u in herdr.
+#
+#   herdr-theme [toggle|dark|light]
+#
+# Independent of the macOS appearance:
+#   1. Write `window-theme = dark|light` to ~/.config/ghostty/theme-mode, which
+#      ~/.config/ghostty/config includes after
+#      `theme = light:TokyoNight Day,dark:TokyoNight Moon`. Forcing the window
+#      theme picks the matching half of that pair.
+#   2. SIGUSR2 Ghostty to reload its config. Ghostty then reports the new
+#      light/dark appearance to herdr, which ([theme] auto_switch = true)
+#      switches its UI between tokyo-night and tokyo-night-day and forwards
+#      the change to panes that asked for it (Neovim, omp).
+#   3. SIGWINCH the attached herdr clients as a backstop, so herdr re-reads
+#      the host colors even if the appearance report is missed.
+set -euo pipefail
+
+usage() { echo "usage: herdr-theme [toggle|dark|light]" >&2; }
+
+case "${1:-toggle}" in
+  toggle | dark | light) want="${1:-toggle}" ;;
+  -h | --help) usage; exit 0 ;;
+  *) usage; exit 2 ;;
+esac
+
+mode_file="$HOME/.config/ghostty/theme-mode"
+
+if [[ "$want" == toggle ]]; then
+  current="$(sed -n 's/^window-theme *= *//p' "$mode_file" 2>/dev/null || true)"
+  [[ "$current" == light ]] && want=dark || want=light
+fi
+
+printf 'window-theme = %s\n' "$want" >"$mode_file"
+
+# PIDs of this user's processes whose executable is named $1. ps rather than
+# pgrep: macOS pgrep can miss processes (e.g. under sandboxed shells).
+pids_named() {
+  ps -U "$(id -u)" -o pid=,comm= | awk -v name="$1" '{ n = $2; sub(/.*\//, "", n) } n == name { print $1 }'
+}
+
+ghostty_pids=($(pids_named ghostty))
+if ((${#ghostty_pids[@]} == 0)); then
+  echo "herdr-theme: Ghostty is not running; saved $want for next launch" >&2
+else
+  kill -USR2 "${ghostty_pids[@]}"
+fi
+
+sleep 0.3
+herdr_pids=($(pids_named herdr))
+((${#herdr_pids[@]} == 0)) || kill -WINCH "${herdr_pids[@]}" 2>/dev/null || true
+
+if [[ -n "${HERDR_ENV:-}${HERDR_ACTIVE_PANE_ID:-}" ]]; then
+  "${HERDR_BIN_PATH:-herdr}" notification show "Theme: $want" >/dev/null 2>&1 || true
+fi

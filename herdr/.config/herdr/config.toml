@@ -1,0 +1,142 @@
+onboarding = false
+# herdr config — full defaults: `herdr --default-config`
+# Validate: `herdr config check`   Reload: `prefix+shift+r` (the CLI's
+# `herdr server reload-config` does not reload attached clients' keybindings)
+
+# auto_switch follows the light/dark appearance Ghostty reports: tokyo-night
+# when dark, its built-in sibling tokyo-night-day when light. Ghostty's
+# appearance is forced by ~/.config/ghostty/theme-mode, which prefix+u
+# (herdr-theme) toggles — so it does not follow the macOS setting.
+[theme]
+name = "tokyo-night"
+auto_switch = true
+
+[ui]
+status_indicators = "symbols"
+# Right end of the tab row, left to right: ZOOM pill (only while zoomed), clock.
+tab_bar_right = [
+  { type = "zoom" },
+  { type = "datetime", format = "%a %m/%d %I:%M %p" },
+]
+tab_bar_right_separator = " · "
+
+[ui.toast]
+delivery = "herdr"
+
+# Only deviations from herdr's defaults; `prefix+?` lists every binding.
+[keys]
+prefix = "ctrl+a"
+# Splits, tmux-style: | side by side, - stacked
+split_vertical = "prefix+|"
+split_horizontal = "prefix+minus"
+copy_mode = ["prefix+[", "prefix+enter"]
+
+# Folder -> workspace picker (also `hp` from a plain terminal).
+[[keys.command]]
+key = "prefix+f"
+type = "popup"
+command = "$HOME/.local/bin/herdr-picker"
+description = "open folder as workspace"
+width = "80%"
+height = "80%"
+
+# Break the focused pane out into a new tab, like tmux's `prefix+!`.
+[[keys.command]]
+key = "prefix+!"
+type = "shell"
+command = "herdr pane move \"$HERDR_ACTIVE_PANE_ID\" --new-tab --focus"
+description = "move pane to new tab"
+
+# tmux-style preset layouts (herdr has none built in). prefix+space cycles
+# even-horizontal -> even-vertical -> main-vertical -> tiled, like tmux's
+# next-layout; prefix+alt+1..4 jump straight to one (tmux's M-1..M-5 order,
+# minus main-horizontal). Also `herdr-layout <name>` from any pane.
+[[keys.command]]
+key = "prefix+space"
+type = "shell"
+command = "$HOME/.local/bin/herdr-layout next"
+description = "next layout"
+
+[[keys.command]]
+key = "prefix+alt+1"
+type = "shell"
+command = "$HOME/.local/bin/herdr-layout even-horizontal"
+description = "layout: side by side"
+
+[[keys.command]]
+key = "prefix+alt+2"
+type = "shell"
+command = "$HOME/.local/bin/herdr-layout even-vertical"
+description = "layout: stacked"
+
+[[keys.command]]
+key = "prefix+alt+3"
+type = "shell"
+command = "$HOME/.local/bin/herdr-layout main-vertical"
+description = "layout: main left, rest stacked right"
+
+[[keys.command]]
+key = "prefix+alt+4"
+type = "shell"
+command = "$HOME/.local/bin/herdr-layout tiled"
+description = "layout: tiled grid"
+
+# Dark/light switch across Ghostty, herdr, Neovim, and omp — the herdr port of
+# tmux.conf's prefix+u. Also `herdr-theme dark|light` from any shell.
+[[keys.command]]
+key = "prefix+u"
+type = "shell"
+command = "$HOME/.local/bin/herdr-theme"
+description = "toggle dark/light theme"
+
+# Seamless Ctrl+h/j/k/l across herdr panes and Neovim splits, like tmux.conf's
+# @pane-is-vim bindings. Neovim side: nvim/.config/nvim/lua/herdr_smart_splits.lua.
+[[keys.command]]
+key = "ctrl+h"
+type = "shell"
+command = "$HOME/.local/bin/herdr-smart-nav left"
+description = "navigate left (herdr/nvim)"
+
+[[keys.command]]
+key = "ctrl+j"
+type = "shell"
+command = "$HOME/.local/bin/herdr-smart-nav down"
+description = "navigate down (herdr/nvim)"
+
+[[keys.command]]
+key = "ctrl+k"
+type = "shell"
+command = "$HOME/.local/bin/herdr-smart-nav up"
+description = "navigate up (herdr/nvim)"
+
+[[keys.command]]
+key = "ctrl+l"
+type = "shell"
+command = "$HOME/.local/bin/herdr-smart-nav right"
+description = "navigate right (herdr/nvim)"
+
+# Swap the focused pane with its neighbour — herdr's directional stand-in for
+# tmux's prefix+{ / prefix+} (swap-pane by index; herdr has no pane order).
+[[keys.command]]
+key = "prefix+shift+h"
+type = "shell"
+command = "herdr pane swap --pane \"$HERDR_ACTIVE_PANE_ID\" --direction left"
+description = "swap pane left"
+
+[[keys.command]]
+key = "prefix+shift+j"
+type = "shell"
+command = "herdr pane swap --pane \"$HERDR_ACTIVE_PANE_ID\" --direction down"
+description = "swap pane down"
+
+[[keys.command]]
+key = "prefix+shift+k"
+type = "shell"
+command = "herdr pane swap --pane \"$HERDR_ACTIVE_PANE_ID\" --direction up"
+description = "swap pane up"
+
+[[keys.command]]
+key = "prefix+shift+l"
+type = "shell"
+command = "herdr pane swap --pane \"$HERDR_ACTIVE_PANE_ID\" --direction right"
+description = "swap pane right"
